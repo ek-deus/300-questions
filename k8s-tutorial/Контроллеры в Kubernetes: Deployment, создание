@@ -1,0 +1,113 @@
+Контроллеры в Kubernetes: Deployment, создание
+
+Контроллер Deployment предоставляет декларативные обновления для Pod и ReplicaSets.
+
+Вы описываете желаемое состояние в Deployment, и контроллер Deployment изменяет фактическое состояние на желаемое состояние с контролируемой скоростью. Вы можете определить Deployments для создания новых ReplicaSets или для удаления существующих Deployments и принять все их ресурсы с новыми Deployments.
+
+Сценарии использования Deployment
+Ниже приведены типичные сценарии использования для Deployment:
+
+Создайте Deployment для развертывания ReplicaSet. ReplicaSet создает Pod'ы в фоновом режиме. Проверьте состояние развертывания, чтобы увидеть, насколько оно проходит успешно или нет.
+Объявите новое состояние Pod'ов, обновив PodTemplateSpec для Deployment. Создается новый ReplicaSet, и Deployment управляет перемещением Pod'ов из старого ReplicaSet в новый с контролируемой скоростью. Каждый новый ReplicaSet обновляет версию Deployment.
+Откат к более ранней версии Deployment, если текущее состояние Deployment нестабильно. Каждый откат обновляет версию Deployment.
+Масштабировать Deployment, чтобы обеспечить работу с большей нагрузкой.
+Приостановите Deployment, чтобы применить несколько исправлений к его PodTemplateSpec, а затем возобновите его, чтобы начать новое развертывание.
+Используйте статус Deployment как индикатор того, что развертывание застряло.
+Очистите старые ReplicaSets, которые вам больше не нужны.
+Создание Deployment
+Ниже приведен пример Deployment. Он создает ReplicaSet из трех nginx Pod'ов:
+
+controllers/nginx-deployment.yaml
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.7.9
+        ports:
+        - containerPort: 80
+В этом примере:
+
+Deployment с именем nginx-creation создается в поле .metadata.name.
+Deployment создает три реплицированных Pod'а, указанных в поле replicas.
+Поле selector определяет, как Deployment находит, какими Pod'ами управлять. В этом случае вы просто выбираете метку, которая определена в шаблоне Pod (app: nginx). Однако возможны более сложные правила выбора, если сам шаблон Pod удовлетворяет этому правилу.
+Поле шаблона содержит следующие подполя:
+Pod'ы помечены как app: nginx используя поля labels.
+Спецификация шаблона Pod, или поле .template.spec, указывает, что Pod'ы запускают один контейнер, nginx, который запускает образ nginx версии 1.7.9 с Docker Hub.
+Создает один контейнер и называет его nginx, используя поле name.
+Выполните шаги, приведенные ниже, чтобы создать вышеуказанный Deployment:
+
+Прежде чем начать, убедитесь, что ваш кластер Kubernetes запущен и работает.
+
+1. Создайте Deployment, выполнив следующую команду:
+
+Примечание. Вы можете указать флаг –record для записи команды, выполняемой в аннотации ресурса kubernetes.io/change-cause. Это полезно для будущего самоанализа. Например, чтобы увидеть команды, выполняемые в каждой редакции Deployment.
+
+
+kubectl apply -f https://k8s.io/examples/controllers/nginx-deployment.yaml
+2. Запустите kubectl get deployments, чтобы проверить, был ли создан Deployment. Если Deployment все еще создается, вывод будет похож на следующее:
+
+
+NAME               DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment   3         0         0            0           1s
+При проверке Deployments в кластере отображаются следующие поля:
+
+NAME содержит имена Deployments в кластере.
+DESIRED отображает желаемое количество реплик приложения, которое вы определяете при создании Deployment. Это желаемое состояние.
+CURRENT показывает, сколько реплик работает в данный момент.
+UP-TO-DATE отображает количество реплик, которые были обновлены для достижения желаемого состояния.
+AVAILABLE показывает, сколько реплик приложения доступно вашим пользователям.
+AGE отображает время, в течение которого приложение было запущено.
+Обратите внимание, что количество требуемых реплик равно 3 в соответствии с полем .spec.replicas.
+
+3. Чтобы увидеть состояние развертывания Deployment, запустите kubectl rollout status deployment.v1.apps/nginx-deployment. Вывод похож на следующее:
+
+
+Waiting for rollout to finish: 2 out of 3 new replicas have been updated...
+deployment.apps/nginx-deployment successfully rolled out
+4. Снова запустите kubectl get deployments через несколько секунд. Вывод похож на следующее:
+
+
+NAME               DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment   3         3         3            3           18s
+Обратите внимание, что Deployment создал все три реплики, и все реплики обновлены (они содержат последний шаблон Pod) и доступны.
+
+5. Чтобы увидеть ReplicaSet (rs), созданный Deployment'ом, запустите kubectl get rs. Вывод похож на следующее:
+
+
+NAME                          DESIRED   CURRENT   READY   AGE
+nginx-deployment-75675f5897   3         3         3       18s
+Обратите внимание, что имя ReplicaSet всегда форматируется как [DEPLOYMENT-NAME]-[RANDOM-STRING]. Случайная строка генерируется случайным образом и использует хеш pod-template-hash в качестве начального числа.
+
+6. Чтобы увидеть метки, автоматически сгенерированные для каждого Pod, запустите kubectl get pods --show-label. Следующий результат возвращается:
+
+
+NAME                                READY     STATUS    RESTARTS   AGE       LABELS
+nginx-deployment-75675f5897-7ci7o   1/1       Running   0          18s       app=nginx,pod-template-hash=3123191453
+nginx-deployment-75675f5897-kzszj   1/1       Running   0          18s       app=nginx,pod-template-hash=3123191453
+nginx-deployment-75675f5897-qqcnn   1/1       Running   0          18s       app=nginx,pod-template-hash=3123191453
+Созданный ReplicaSet гарантирует наличие трех Pod'ов nginx.
+
+Примечание. Необходимо указать соответствующий селектор и метки шаблона Pod в Deployment (в данном случае app: nginx). Не перекрывайте метки или селекторы с другими контроллерами (включая другие Deployments и StatefulSets). Kubernetes не останавливает вас от перекрытия, и если несколько контроллеров имеют перекрывающиеся селекторы, эти контроллеры могут конфликтовать и вести себя неожиданно.
+
+Pod-template-hash метка
+Примечание: не меняйте эту метку.
+
+Метка (label) pod-template-hash добавляется контроллером Deployment в каждый ReplicaSet, который создается или принимает Deployment.
+
+Эта метка гарантирует, что дочерние ReplicaSets принадлежащие Deployment не перекрываются. Он генерируется путем хэширования PodTemplate набора ReplicaSet и использования результирующего хэша в качестве значения метки, добавляемого к селектору ReplicaSet, меткам шаблона Pod и в любых существующих Pod'ах, которые могут иметь ReplicaSet.
