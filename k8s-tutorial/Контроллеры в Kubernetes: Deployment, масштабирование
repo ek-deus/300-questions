@@ -1,0 +1,71 @@
+Контроллеры в Kubernetes: Deployment, масштабирование
+
+Вы можете масштабировать Deployment с помощью следующей команды:
+
+
+kubectl scale deployment.v1.apps/nginx-deployment --replicas=10 
+Вывод:
+
+
+deployment.apps/nginx-deployment scaled 
+Предполагая, что в вашем кластере включено горизонтальное автоматическое масштабирование Pod'ов, вы можете настроить автоматическое масштабирование для вашего Deployment и выбрать минимальное и максимальное количество Pod'ов, которые вы хотите запустить, исходя из загрузки ЦП существующих Pod'ов.
+
+
+kubectl autoscale deployment.v1.apps/nginx-deployment --min=10 --max=15 --cpu-percent=80
+Вывод:
+
+
+deployment.apps/nginx-deployment scaled
+Пропорциональное масштабирование
+Deployments RollingUpdate поддерживают запуск нескольких версий приложения одновременно. Когда вы или автоматическое масштабирование масштабируете Deployment RollingUpdate, находящееся в середине развертывания (либо в процессе, либо в режиме паузы), контроллер Deployment балансирует дополнительные реплики в существующих активных наборах ReplicaSets (наборы ReplicaSets с Pod'ами), чтобы снизить риск. Это называется пропорциональным масштабированием.
+
+Например, вы запускаете Deployment с 10 репликами, maxSurge = 3 и maxUnavailable = 2.
+
+Убедитесь, что 10 реплик в вашем Deployment работают.
+
+
+shell kubectl get deploy
+Вывод:
+
+
+NAME                 DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment     10        10        10           10          50s
+Вы обновляете новый образ, который оказывается неразрешимым внутри кластера.
+
+
+kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:sometag
+Вывод:
+
+
+deployment.apps/nginx-deployment image updated
+Обновление образа запускает новое развертывание с ReplicaSet nginx-deploy-1989198191, но оно заблокировано из-за требования maxUnavailable, которое вы упомянули выше. Проверьте статус развертывания:
+
+
+kubectl get rs
+Вывод:
+
+
+NAME                          DESIRED   CURRENT   READY     AGE
+nginx-deployment-1989198191   5         5         0         9s
+nginx-deployment-618515232    8         8         8         1m
+Затем приходит новый запрос на масштабирование для Deployment. Autoscaler увеличивает реплики развертывания до 15. Контроллер Deployment должен решить, куда добавить эти 5 новых реплик. Если вы не используете пропорциональное масштабирование, все 5 из них будут добавлены в новый ReplicaSet. При пропорциональном масштабировании вы распределяете дополнительные реплики по всем ReplicaSets. Большие пропорции переходят к ReplicaSets с наибольшим количеством реплик, а меньшие пропорции переходят к ReplicaSets с меньшим количеством реплик. Любые остатки добавляются в ReplicaSet с наибольшим количеством реплик. ReplicaSets с нулевыми репликами не масштабируются.
+
+В нашем примере выше, 3 реплики добавляются к старому ReplicaSet, и 2 реплики добавляются к новому ReplicaSet. Процесс развертывания должен в конечном итоге переместить все реплики в новый ReplicaSet, при условии, что новые реплики станут работоспособными. Чтобы подтвердить это, запустите:
+
+
+kubectl get deploy
+Вывод:
+
+
+NAME                 DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment     15        18        7            8           7m
+Статус развертывания подтверждает, как реплики были добавлены к каждому ReplicaSet.
+
+
+kubectl get rs
+Вывод:
+
+
+NAME                          DESIRED   CURRENT   READY     AGE
+nginx-deployment-1989198191   7         7         0         7m
+nginx-deployment-618515232    11        11        11        7m
