@@ -1,0 +1,143 @@
+Метки в Kubernetes
+
+Вы можете визуализировать объекты Kubernetes и управлять ими с помощью большего количества инструментов, чем kubectl и панель инструментов. Общий набор меток позволяет инструментам работать интероперабельно, описывая объекты в общем виде, понятном для всех инструментов.
+
+В дополнение к поддержке инструментов, рекомендуемые метки описывают приложения таким образом, чтобы их можно было запрашивать.
+
+Метаданные организованы вокруг концепции приложения. Kubernetes не является платформой как сервисом (PaaS) и не имеет или не применяет формальное понятие приложения. Вместо этого приложения являются неформальными и описываются метаданными. Определение того, что содержит приложение, является свободным.
+
+Примечание. Это рекомендуемые метки. Они облегчают управление приложениями, но не требуются для каких-либо основных инструментов.
+
+Общие метки и аннотации имеют общий префикс: app.kubernetes.io. Метки без префикса являются частными для пользователей. Общий префикс гарантирует, что общие метки не будут мешать пользовательским меткам.
+
+Метки
+Чтобы в полной мере использовать следующие метки, их следует применять к каждому объекту ресурса.
+
+Ключ: app.kubernetes.io/name
+Описание: Имя приложения
+Пример: mysql
+Тип: string
+Ключ: app.kubernetes.io/instance
+Описание: Уникальное имя, идентифицирующее экземпляр приложения
+Пример: wordpress-abcxzy
+Тип: string
+Ключ: app.kubernetes.io/version
+Описание: Текущая версия приложения (например, семантическая версия, хэш версии и т.д.)
+Пример: 5.7.21
+Тип: string
+Ключ: app.kubernetes.io/component
+Описание: Компонент в архитектуре
+Пример: database
+Тип: string
+Ключ: app.kubernetes.io/part-of
+Описание: Имя приложения более высокого уровня, частью которого является данное приложение
+Пример: wordpress
+Тип: string
+Ключ: app.kubernetes.io/managed-by
+Описание: Инструмент, используемый для управления операциями приложения
+Пример: helm
+Тип: string
+Чтобы проиллюстрировать эти метки в действии, рассмотрим следующий объект StatefulSet:
+
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: wordpress-abcxzy
+    app.kubernetes.io/version: "5.7.21"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wordpress
+    app.kubernetes.io/managed-by: helm
+Приложения и экземпляры приложений
+Приложение может быть установлено один или несколько раз в кластер Kubernetes и, в некоторых случаях, в одно и то же пространство имен. Например, WordPress может быть установлен более одного раза, где разные сайты это разные установки WordPress.
+
+Название приложения и имя экземпляра записываются отдельно. Например, WordPress имеет app.kubernetes.io/name: wordpress, в то время как у него есть имя экземпляра, представленное как app.kubernetes.io/instance со значением wordpress-abcxzy. Это позволяет идентифицировать приложение и экземпляр приложения. Каждый экземпляр приложения должен иметь уникальное имя.
+
+Примеры
+Чтобы проиллюстрировать различные способы использования этих меток, следующие примеры имеют различную сложность.
+
+Простая служба без сохранения состояния
+Рассмотрим случай простой службы без сохранения состояния, развернутой с использованием объектов Deployment и Service. Следующие два фрагмента представляют, как можно использовать метки в их простейшей форме.
+
+Deployment используется для наблюдения за pods, в которых выполняется само приложение.
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: myservice
+    app.kubernetes.io/instance: myservice-abcxzy
+...
+Service используется для представления приложения.
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: myservice
+    app.kubernetes.io/instance: myservice-abcxzy
+...
+Веб-приложение с базой данных
+Рассмотрим немного более сложное приложение: веб-приложение (WordPress), использующее базу данных (MySQL), установленное с помощью Helm. Следующие фрагменты иллюстрируют начальные части объектов, используемых для развертывания этого приложения.
+
+Начало следующего Deployment используется для WordPress:
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/instance: wordpress-abcxzy
+    app.kubernetes.io/version: "4.9.4"
+    app.kubernetes.io/managed-by: helm
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: wordpress
+...
+Service используется для представления WordPress:
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/instance: wordpress-abcxzy
+    app.kubernetes.io/version: "4.9.4"
+    app.kubernetes.io/managed-by: helm
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: wordpress
+...
+MySQL представлен как StatefulSet с метаданными как для самого приложения, так и для более крупного приложения, к которому он относится:
+
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql-abcxzy
+    app.kubernetes.io/version: "5.7.21"
+    app.kubernetes.io/managed-by: helm
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wordpress
+...
+Service используется для предоставления MySQL как части WordPress:
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql-abcxzy
+    app.kubernetes.io/version: "5.7.21"
+    app.kubernetes.io/managed-by: helm
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wordpress
+...
+С MySQL StatefulSet и Service вы увидите информацию о MySQL и Wordpress, как более широком приложении.
