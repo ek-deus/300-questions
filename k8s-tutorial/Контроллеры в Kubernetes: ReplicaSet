@@ -1,0 +1,284 @@
+Контроллеры в Kubernetes: ReplicaSet
+
+Цель контроллера ReplicaSet - поддерживать стабильный набор реплик (экземпляров) Pod'ов, работающих в любой момент времени. Как таковой, он часто используется, чтобы гарантировать наличие определенного количества идентичных Pod'ов.
+
+Как работает ReplicaSet
+ReplicaSet задается полями, включая селектор (selector), который указывает, как идентифицировать Pod'ы, которые он может приобрести, количество реплик (replicas), указывающих, сколько Pod'ов он должен поддерживать, и шаблон (template) Pod'ов, указывающий данные новых Pod'ов, которые он должен создать для соответствия критерию количества реплик. Затем ReplicaSet выполняет свое предназначение, создавая и удаляя Pod'ы по мере необходимости для достижения желаемого числа. Когда ReplicaSet нуждается в создании новых Pod'ов, он использует свой шаблон Pod'ов для их создания.
+
+Ссылка, которую ReplicaSet имеет на свои Pod'ы, осуществляется через поле metadata.ownerReferences Pod'ов, которое указывает, какому ресурсу принадлежит текущий объект. Все Pod'ы, приобретенные ReplicaSet, имеют свою идентификационную информацию ReplicaSet в своем поле ownerReferences. Именно по этой ссылке ReplicaSet знает о состоянии Pod'ов, которые он поддерживает, и планирует соответственно.
+
+ReplicaSet идентифицирует новые Pod'ы для приобретения с помощью своего селектора. Если есть Pod, у которого нет OwnerReference или OwnerReference не является контроллером, и он соответствует селектору ReplicaSet, он будет немедленно получен указанным ReplicaSet.
+
+Когда использовать ReplicaSet
+ReplicaSet гарантирует, что указанное количество реплик Pod'ов работает в любой момент времени. Тем не менее, Deployment - это высокоуровневая концепция, которая управляет ReplicaSets и предоставляет декларативные обновления для Pod вместе с множеством других полезных функций. Поэтому рекомендуется использовать Deployments вместо прямого использования ReplicaSets, если только вам не требуется настраиваемая оркестровка обновлений или совсем не требуются обновления.
+
+Фактически это означает, что вам, возможно, никогда не понадобится манипулировать объектами ReplicaSet: вместо этого используйте Deployment и определите свое приложение в разделе спецификаций.
+
+Пример ReplicaSet
+controllers/frontend.yaml
+
+
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: frontend
+  labels:
+    app: guestbook
+    tier: frontend
+spec:
+  # измените реплики согласно вашему случаю
+  replicas: 3
+  selector:
+    matchLabels:
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        tier: frontend
+    spec:
+      containers:
+      - name: php-redis
+        image: gcr.io/google_samples/gb-frontend:v3
+Сохранение этого манифеста в frontend.yaml и отправка его в кластер Kubernetes создаст определенный ReplicaSet и Pod'ы, которыми он управляет.
+
+
+kubectl apply -f https://kubernetes.io/examples/controllers/frontend.yaml
+Затем вы можете развернуть текущий ReplicaSets:
+
+
+kubectl get rs
+И увидите frontend, который вы создали:
+
+
+NAME       DESIRED   CURRENT   READY   AGE
+frontend   3         3         3       6s
+Вы также можете проверить состояние репликации:
+
+
+kubectl describe rs/frontend
+И вы увидите вывод, похожий на:
+
+
+Name:  frontend
+Namespace: default
+Selector: tier=frontend,tier in (frontend)
+Labels:  app=guestbook
+  tier=frontend
+Annotations: 
+Replicas: 3 current / 3 desired
+Pods Status: 3 Running / 0 Waiting / 0 Succeeded / 0 Failed
+Pod Template:
+  Labels:       app=guestbook
+                tier=frontend
+  Containers:
+   php-redis:
+    Image:      gcr.io/google_samples/gb-frontend:v3
+    Port:       80/TCP
+    Requests:
+      cpu:      100m
+      memory:   100Mi
+    Environment:
+      GET_HOSTS_FROM:   dns
+    Mounts:             
+  Volumes:              
+Events:
+  FirstSeen    LastSeen    Count    From                SubobjectPath    Type        Reason            Message
+  ---------    --------    -----    ----                -------------    --------    ------            -------
+  1m           1m          1        {replicaset-controller }             Normal      SuccessfulCreate  Created pod: frontend-qhloh
+  1m           1m          1        {replicaset-controller }             Normal      SuccessfulCreate  Created pod: frontend-dnjpy
+  1m           1m          1        {replicaset-controller }             Normal      SuccessfulCreate  Created pod: frontend-9si5l
+И, наконец, вы можете проверить, какие Pod'ы были выведены:
+
+
+kubectl get Pods
+Вы должны увидеть информацию, похожую на:
+
+
+NAME             READY     STATUS    RESTARTS   AGE
+frontend-9si5l   1/1       Running   0          1m
+frontend-dnjpy   1/1       Running   0          1m
+frontend-qhloh   1/1       Running   0          1m
+Вы также можете убедиться, что для владельца в этих Pod'ах задан frontend ReplicaSet. Для этого получите yaml одного из Pod'ов:
+
+
+kubectl get pods frontend-9si5l -o yaml
+Вывод будет выглядеть примерно так: информация frontend ReplicaSet установлена в поле ownerReferences в metadata:
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: 2019-01-31T17:20:41Z
+  generateName: frontend-
+  labels:
+    tier: frontend
+  name: frontend-9si5l
+  namespace: default
+  ownerReferences:
+  - apiVersion: extensions/v1beta1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ReplicaSet
+    name: frontend
+    uid: 892a2330-257c-11e9-aecd-025000000001
+...
+Приобретение не шаблонного Pod'а контроллером
+Хотя вы можете создавать пустые Pod'ы без проблем, настоятельно рекомендуется убедиться, что у пустых Pod'ов нет меток, соответствующих селектору одного из ваших ReplicaSets. Причина этого заключается в том, что ReplicaSet не ограничивается владением Pod'ами, указанными в его шаблоне, - он может приобретать другие Pod'ы в порядке, указанном выше.
+
+Возьмем предыдущий пример frontend ReplicaSet и Pod'ы, указанные в следующем манифесте pods/pod-rs.yaml:
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod1
+  labels:
+    tier: frontend
+spec:
+  containers:
+  - name: hello1
+    image: gcr.io/google-samples/hello-app:2.0
+
+---
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod2
+  labels:
+    tier: frontend
+spec:
+  containers:
+  - name: hello2
+    image: gcr.io/google-samples/hello-app:1.0
+Поскольку эти Pod'ы не имеют контроллера (или какого-либо объекта) в качестве ссылки на своего владельца и соответствуют селектору frontend ReplicaSet, они сразу же будут им получены.
+
+Предположим, что вы создали Pod'ы после того, как frontend ReplicaSet был развернут и настроил свои начальные реплики Pod'ов для выполнения требований к количеству реплик:
+
+
+kubectl apply -f https://kubernetes.io/examples/pods/pod-rs.yaml
+Новые Pod'ы будут получены ReplicaSet, а затем немедленно завершены (terminated), так как ReplicaSet превысит желаемое количество реплик.
+
+Извлечение Pod'ов:
+
+
+kubectl get Pods
+Вывод показывает, что новые Pod'ы либо уже завершены, либо находятся в процессе завершения:
+
+
+NAME             READY   STATUS        RESTARTS   AGE
+frontend-9si5l   1/1     Running       0          1m
+frontend-dnjpy   1/1     Running       0          1m
+frontend-qhloh   1/1     Running       0          1m
+pod2             0/1     Terminating   0          4s
+Если вы сначала создаете Pod'ы:
+
+
+kubectl apply -f https://kubernetes.io/examples/pods/pod-rs.yaml
+А затем создайте ReplicaSet:
+
+
+kubectl apply -f https://kubernetes.io/examples/controllers/frontend.yaml
+Вы увидите, что ReplicaSet получил Pod'ы и создал новые только в соответствии со своей спецификацией до тех пор, пока количество новых Pod'ов и оригинал не совпадут с желаемым количеством. Запрос Pod'ов:
+
+
+kubectl get Pods
+Покажет в своем выводе:
+
+
+NAME             READY   STATUS    RESTARTS   AGE
+frontend-pxj4r   1/1     Running   0          5s
+pod1             1/1     Running   0          13s
+pod2             1/1     Running   0          13s
+Таким образом, ReplicaSet может владеть неоднородным набором Pod'ов.
+
+Написание манифеста ReplicaSet
+Как и для всех других объектов API Kubernetes, для ReplicaSet нужны поля apiVersion, kind и metadata. Для ReplicaSets, kind всегда просто ReplicaSet. В Kubernetes 1.9 версия API apps/v1 типа ReplicaSet является текущей версией и включена по умолчанию. Версия API apps/v1beta2 устарела.
+
+ReplicaSet также нуждается в разделе .spec.
+
+Pod шаблон (Pod Template)
+.spec.template - это шаблон pod, который также должен иметь метки. В нашем примере frontend.yaml у нас была одна метка: tier: frontend. Будьте осторожны, чтобы не пересекаться с селекторами других контроллеров, чтобы они не попытались принять этот Pod.
+
+Для поля политики перезапуска шаблона .spec.template.spec.restartPolicy единственным допустимым значением является Always (значение по умолчанию).
+
+Pod Selector
+Поле .spec.selector является селектором меток. Как обсуждалось ранее, это метки, используемые для идентификации потенциальных Pod'ов для приобретения. В нашем примере frontend.yaml селектор был:
+
+
+matchLabels:
+    tier: frontend
+В ReplicaSet .spec.template.metadata.labels должен соответствовать spec.selector, иначе он будет отклонен API.
+
+Примечание. Для двух ReplicaSets, в которых указан один и тот же .spec.selector, но разные поля .spec.template.metadata.labels и .spec.template.spec, каждый ReplicaSet игнорирует Pod'ы, созданные другим ReplicaSet.
+
+Replicas (Реплики)
+Вы можете указать, сколько Pod'ов должно работать одновременно, установив .spec.replicas. ReplicaSet создаст/удалит свои Pod'ы в соответствии с этим числом.
+
+Если вы не укажете .spec.replicas, то по умолчанию это 1.
+
+Работа с ReplicaSets
+Удаление ReplicaSet и его Pod'ов
+Чтобы удалить ReplicaSet и все его Pod'ы, используйте kubectl delete. Сборщик мусора автоматически удаляет все зависимые Pod'ы по умолчанию.
+
+При использовании REST API или библиотеки client-go необходимо установить для параметра applicationationPolicy значение Background или Foreground в параметре -d. Например:
+
+
+kubectl proxy --port=8080
+curl -X DELETE  'localhost:8080/apis/extensions/v1beta1/namespaces/default/replicasets/frontend' \
+> -d '{"kind":"DeleteOptions","apiVersion":"v1","propagationPolicy":"Foreground"}' \
+> -H "Content-Type: application/json"
+Удаление только ReplicaSet
+Вы можете удалить ReplicaSet, не затрагивая ни один из его Pod'ов, используя kubectl delete с опцией --cascade=false. При использовании REST API или библиотеки client-go необходимо установить для параметра propagationPolicy значение Orphan. Например:
+
+
+kubectl proxy --port=8080
+curl -X DELETE  'localhost:8080/apis/extensions/v1beta1/namespaces/default/replicasets/frontend' \
+> -d '{"kind":"DeleteOptions","apiVersion":"v1","propagationPolicy":"Orphan"}' \
+> -H "Content-Type: application/json"
+После удаления оригинала вы можете создать новый ReplicaSet, чтобы заменить его. Если старый и новый .spec.selector совпадают, то новый будет использовать старые Pod'ы. Тем не менее, он не приложит никаких усилий, чтобы существующие Pod'ы соответствовали новому, другому шаблону Pod'ов. Чтобы обновить Pod'ы на новую спецификацию контролируемым образом, используйте контроллер Deployment (развертывание), поскольку ReplicaSets (наборы реплик) не поддерживают прямое обновление.
+
+Изоляция Pod'ов из ReplicaSet
+Вы можете удалить Pod'ы из ReplicaSet, изменив их метки. Этот метод может использоваться для удаления Pod'ов из службы для отладки, восстановления данных и т.д. Pod'ы, которые удалены таким образом, будут заменены автоматически (при условии, что количество реплик также не изменилось).
+
+Масштабирование ReplicaSet
+ReplicaSet можно легко увеличить или уменьшить, просто обновив поле .spec.replicas. Контроллер ReplicaSet обеспечивает доступность и работоспособность необходимого количества Pod'ов с соответствующим селектором меток.
+
+ReplicaSet как Horizontal Pod Autoscaler Target (цель для автоматического горизонтального сервиса масштабирования Pod'ов)
+ReplicaSet также может быть целью для Horizontal Pod Autoscaler (сервиса автоматического горизонтального масштабирования Pod'ов) (HPA). То есть ReplicaSet может быть автоматически масштабирован HPA. Вот пример HPA, нацеленный на ReplicaSet, который мы создали в предыдущем примере. controllers/hpa-rs.yaml
+
+
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-scaler
+spec:
+  scaleTargetRef:
+    kind: ReplicaSet
+    name: frontend
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+Сохранение этого манифеста в hpa-rs.yaml и отправка его в кластер Kubernetes должны создать определенный HPA, который автоматически масштабирует целевой ReplicaSet в зависимости от использования CPU реплицированными Pod'ов.
+
+
+kubectl apply -f https://k8s.io/examples/controllers/hpa-rs.yaml
+В качестве альтернативы, вы можете использовать команду kubectl autoscale, чтобы сделать то же самое (и это проще!)
+
+
+kubectl autoscale rs frontend --max=10
+Альтернативы ReplicaSet
+Deployment (Развертывание) (рекомендуется)
+Deployment - это объект, который может владеть ReplicaSets и обновлять их и их Pod'ы через декларативные, выкатываемые обновления на стороне сервера. Хотя ReplicaSets можно использовать независимо, сегодня они в основном используются Deployments в качестве механизма для организации создания, удаления и обновления Pod. Когда вы используете Deployments, вам не нужно беспокоиться об управлении созданными ими ReplicaSets. Deployments владеют и управляют своими ReplicaSets. Поэтому рекомендуется использовать Deployments, когда вы хотите ReplicaSets.
+
+Голые Pod'ы
+В отличие от случая, когда пользователь непосредственно создал Pod, ReplicaSet заменяет Pod'ы, которые были удалены или прерваны по любой причине, например, в случае сбоя узла или прерывистого обслуживания узла, такого как обновление ядра. По этой причине рекомендуется использовать ReplicaSet, даже если вашему приложению требуется только один Pod. Думайте об этом подобно руководителю процессов (process supervisor), только он контролирует несколько Pod'ов в нескольких узлах, а не отдельные процессы в одном узле. ReplicaSet делегирует перезапуск локального контейнера некоторому агенту на узле (например, Kubelet или Docker).
+
+Job
+Используйте Job вместо ReplicaSet для Pod'ов, которые должны завершаться самостоятельно (например, пакетные задания).
+
+DaemonSet
+Используйте DaemonSet вместо ReplicaSet для Pod'ов, которые обеспечивают функцию уровня машины, такую как мониторинг машины или ведение журнала машины. Срок службы этих Pod'ов зависит от срока службы машины: Pod должен быть запущен на машине до запуска других Pod'ов, и его можно безопасно завершить, когда машина готова к перезагрузке/выключению.
+
+ReplicationController
+ReplicaSets являются преемниками ReplicationControllers. Они служат одной и той же цели и ведут себя одинаково, за исключением того, что ReplicationController не поддерживает требования селектора на основе набора. Таким образом, ReplicaSets предпочтительнее, чем ReplicationControllers.
