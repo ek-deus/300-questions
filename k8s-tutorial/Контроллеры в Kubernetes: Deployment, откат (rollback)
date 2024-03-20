@@ -1,0 +1,215 @@
+Контроллеры в Kubernetes: Deployment, откат (rollback)
+
+Иногда вам может потребоваться откатить (rollback) Deployment; например, когда Deployment работает нестабильно, например, происходят циклы сбоев. По умолчанию вся история развертывания (rollout) Deployment хранится в системе, так что вы можете откатиться в любое время (вы можете изменить это, изменив предел истории изменений).
+
+Примечание. Ревизия Deployment создается при запуске развертывания Deployment. Это означает, что новая ревизия создается только тогда, когда шаблон Pod для Deployment (.spec.template) изменяется, например, если вы обновляете метки или образы контейнера шаблона. Другие обновления, такие как масштабирование Deployment, не создают ревизию Deployment, так что вы можете упростить одновременное ручное или автоматическое масштабирование. Это означает, что при возврате к более ранней ревизии выполняется откат только части шаблона Pod для Deployment.
+
+Предположим, что вы сделали опечатку при обновлении Deployment, поставив имя образа как nginx:1.91 вместо nginx:1.9.1:
+
+
+kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.91 --record=true
+Вывод:
+
+
+deployment.apps/nginx-deployment image updated
+Откат застревает (stuck). Вы можете проверить это, проверив статус развертывания (rollout status):
+
+
+kubectl rollout status deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+Waiting for rollout to finish: 1 out of 3 new replicas have been updated...
+Нажмите Ctrl-C, чтобы остановить вышеприведенный просмотр состояния развертывания.
+
+Вы видите, что количество старых реплик (nginx-deploy-1564180365 и nginx-deploy-2035384211) равно 2, а новых реплик (nginx-deploy-3066724191) равно 1.
+
+
+kubectl get rs
+Вывод:
+
+
+NAME                          DESIRED   CURRENT   READY   AGE
+nginx-deployment-1564180365   3         3         3       25s
+nginx-deployment-2035384211   0         0         0       36s
+nginx-deployment-3066724191   1         1         0       6s
+Взглянув на созданные Pod'ы, вы видите, что 1 Pod, созданный новым ReplicaSet, застрял в цикле извлечения образа.
+
+
+kubectl get pods
+Вывод:
+
+
+NAME                                READY     STATUS             RESTARTS   AGE
+nginx-deployment-1564180365-70iae   1/1       Running            0          25s
+nginx-deployment-1564180365-jbqqo   1/1       Running            0          25s
+nginx-deployment-1564180365-hysrc   1/1       Running            0          25s
+nginx-deployment-3066724191-08mng   0/1       ImagePullBackOff   0          6s
+Примечание. Контроллер Deployment автоматически останавливает неудачное развертывание и прекращает масштабирование нового ReplicaSet. Это зависит от заданных вами параметров rollUpdate (в частности, maxUnavailable). Kubernetes по умолчанию устанавливает значение в 25%.
+
+Получаем описание Deployment:
+
+
+kubectl describe deployment
+Вывод:
+
+
+Name:           nginx-deployment
+Namespace:      default
+CreationTimestamp:  Tue, 15 Mar 2016 14:48:04 -0700
+Labels:         app=nginx
+Selector:       app=nginx
+Replicas:       3 desired | 1 updated | 4 total | 3 available | 1 unavailable
+StrategyType:       RollingUpdate
+MinReadySeconds:    0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.91
+    Port:         80/TCP
+    Host Port:    0/TCP
+    Environment:  
+    Mounts:       
+  Volumes:        
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    ReplicaSetUpdated
+OldReplicaSets:     nginx-deployment-1564180365 (3/3 replicas created)
+NewReplicaSet:      nginx-deployment-3066724191 (1/1 replicas created)
+Events:
+  FirstSeen LastSeen    Count   From                    SubobjectPath   Type        Reason              Message
+  --------- --------    -----   ----                    -------------   --------    ------              -------
+  1m        1m          1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-2035384211 to 3
+  22s       22s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-1564180365 to 1
+  22s       22s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled down replica set nginx-deployment-2035384211 to 2
+  22s       22s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-1564180365 to 2
+  21s       21s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled down replica set nginx-deployment-2035384211 to 1
+  21s       21s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-1564180365 to 3
+  13s       13s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled down replica set nginx-deployment-2035384211 to 0
+  13s       13s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-3066724191 to 1
+Чтобы это исправить, необходимо выполнить откат до предыдущей стабильной версии Deployment.
+
+Проверка истории развертывания Deployment
+Следуйте инструкциям ниже, чтобы проверить историю развертывания:
+
+1. Во-первых, проверьте версии этого Deployment:
+
+
+kubectl rollout history deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+deployments "nginx-deployment"
+REVISION    CHANGE-CAUSE
+1           kubectl apply --filename=https://k8s.io/examples/controllers/nginx-deployment.yaml --record=true
+2           kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.9.1 --record=true
+3           kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.91 --record=true
+CHANGE-CAUSE копируется из аннотации Deployment kubernetes.io/change-cause в его ревизии при создании. Вы можете указать сообщение CHANGE-CAUSE:
+
+Аннотирование развертывания с помощью
+
+kubectl annotate deployment.v1.apps/nginx-deployment kubernetes.io/change-cause="image updated to 1.9.1"
+Добавьте флаг --record, чтобы сохранить команду kubectl, которая вносит изменения в ресурс.
+Редактирование манифеста ресурса вручную.
+2. Чтобы увидеть детали каждой ревизии, запустите:
+
+
+kubectl rollout history deployment.v1.apps/nginx-deployment --revision=2
+Вывод:
+
+
+deployments "nginx-deployment" revision 2
+  Labels:       app=nginx
+          pod-template-hash=1159050644
+  Annotations:  kubernetes.io/change-cause=kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.9.1 --record=true
+  Containers:
+   nginx:
+    Image:      nginx:1.9.1
+    Port:       80/TCP
+     QoS Tier:
+        cpu:      BestEffort
+        memory:   BestEffort
+    Environment Variables:      
+  No volumes.
+Откат Deployment к предыдущей версии
+Выполните приведенные ниже шаги, чтобы откатить Deployment с текущей версии до предыдущей версии, которая является версией 2.
+
+Теперь вы решили отменить текущее развертывание и откатиться к предыдущей ревизии:
+
+
+kubectl rollout undo deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+deployment.apps/nginx-deployment
+В качестве альтернативы, вы можете выполнить откат к определенной ревизии, указав ее --to-revision:
+
+
+kubectl rollout undo deployment.v1.apps/nginx-deployment --to-revision=2
+Вывод:
+
+
+deployment.apps/nginx-deployment
+Deployment теперь откатилось до предыдущей стабильной версии. Как видите, событие DeploymentRollback для отката до ревизии 2 генерируется из контроллера Deployment.
+
+Чтобы проверить, был ли откат успешным, а Deployment работает, как и ожидалось, запустите:
+
+
+kubectl get deployment nginx-deployment
+Вывод:
+
+
+NAME               DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment   3         3         3            3           30m
+Получить описание Deployment:
+
+
+kubectl describe deployment nginx-deployment
+Вывод:
+
+
+Name:                   nginx-deployment
+Namespace:              default
+CreationTimestamp:      Sun, 02 Sep 2018 18:17:55 -0500
+Labels:                 app=nginx
+Annotations:            deployment.kubernetes.io/revision=4
+                        kubernetes.io/change-cause=kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.9.1 --record=true
+Selector:               app=nginx
+Replicas:               3 desired | 3 updated | 3 total | 3 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.9.1
+    Port:         80/TCP
+    Host Port:    0/TCP
+    Environment:  
+    Mounts:       
+  Volumes:        
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  
+NewReplicaSet:   nginx-deployment-c4747d96c (3/3 replicas created)
+Events:
+  Type    Reason              Age   From                   Message
+  ----    ------              ----  ----                   -------
+  Normal  ScalingReplicaSet   12m   deployment-controller  Scaled up replica set nginx-deployment-75675f5897 to 3
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-c4747d96c to 1
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled down replica set nginx-deployment-75675f5897 to 2
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-c4747d96c to 2
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled down replica set nginx-deployment-75675f5897 to 1
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-c4747d96c to 3
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled down replica set nginx-deployment-75675f5897 to 0
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-595696685f to 1
+  Normal  DeploymentRollback  15s   deployment-controller  Rolled back deployment "nginx-deployment" to revision 2
+  Normal  ScalingReplicaSet   15s   deployment-controller  Scaled down replica set nginx-deployment-595696685f to 0
