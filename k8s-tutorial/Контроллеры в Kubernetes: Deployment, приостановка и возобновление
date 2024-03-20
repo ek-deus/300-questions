@@ -1,0 +1,108 @@
+Контроллеры в Kubernetes: Deployment, приостановка и возобновление
+
+Вы можете приостановить Deployment, прежде чем запускать одно или несколько обновлений, а затем возобновить его. Это позволяет применять несколько исправлений между приостановкой и возобновлением, не вызывая ненужных развертываний.
+
+Например, с только что созданным Deployment (из предыдущего поста): получите детали Deployment:
+
+
+kubectl get deploy 
+Вывод:
+
+
+NAME      DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE 
+nginx     3         3         3            3           1m 
+Получить статус развертывания:
+
+
+kubectl get rs
+Вывод:
+
+
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   3         3         3         1m
+Сделайте приостановление, выполнив следующую команду:
+
+
+kubectl rollout pause deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+deployment.apps/nginx-deployment paused
+Затем обновите образ Deployment:
+
+
+kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.9.1
+Вывод:
+
+
+deployment.apps/nginx-deployment image updated
+Обратите внимание, что запуск нового развертывания не начался:
+
+
+kubectl rollout history deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1   
+Получите статус развертывания, чтобы убедиться, что Deployment обновляется успешно:
+
+
+kubectl get rs
+Вывод:
+
+
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   3         3         3         2m
+Вы можете сделать столько обновлений, сколько пожелаете, например, обновить ресурсы, которые будут использоваться:
+
+
+kubectl set resources deployment.v1.apps/nginx-deployment -c=nginx --limits=cpu=200m,memory=512Mi
+Вывод:
+
+
+deployment.apps/nginx-deployment resource requirements updated
+Начальное состояние Deployment до его приостановки продолжит свою работу, но новые обновления Deployment не будут иметь никакого эффекта, пока Deployment приостановлен.
+
+В конце концов, возобновите Deployment и наблюдайте новый набор ReplicaSet со всеми новыми обновлениями:
+
+
+kubectl rollout resume deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+deployment.apps/nginx-deployment resumed
+Следите за состоянием развертывания, пока оно не будет сделано.
+
+
+kubectl get rs -w
+Вывод:
+
+
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   2         2         2         2m
+nginx-3926361531   2         2         0         6s
+nginx-3926361531   2         2         1         18s
+nginx-2142116321   1         2         2         2m
+nginx-2142116321   1         2         2         2m
+nginx-3926361531   3         2         1         18s
+nginx-3926361531   3         2         1         18s
+nginx-2142116321   1         1         1         2m
+nginx-3926361531   3         3         1         18s
+nginx-3926361531   3         3         2         19s
+nginx-2142116321   0         1         1         2m
+nginx-2142116321   0         1         1         2m
+nginx-2142116321   0         0         0         2m
+nginx-3926361531   3         3         3         20s
+Получить статус последнего развертывания:
+
+
+kubectl get rs
+Вывод:
+
+
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   0         0         0         2m
+nginx-3926361531   3         3         3         28s
+Примечание. Вы не можете откатить приостановленное Deployment, пока не возобновите его.
