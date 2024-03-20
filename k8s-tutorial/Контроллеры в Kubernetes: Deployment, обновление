@@ -1,0 +1,130 @@
+Контроллеры в Kubernetes: Deployment, обновление
+
+Следуйте приведенным ниже инструкциям, чтобы обновить свой Deployment:
+
+1. Обновим Pod'ы nginx (созданные в предыдущем посте), чтобы использовать образ nginx:1.9.1 вместо образа nginx:1.7.9.
+
+
+kubectl --record deployment.apps/nginx-deployment set image deployment.v1.apps/nginx-deployment nginx=nginx:1.9.1
+Вывод:
+
+
+deployment.apps/nginx-deployment image updated
+Кроме того, вы можете отредактировать Deployment и изменить .spec.template.spec.containers[0].image с nginx:1.7.9 на nginx:1.9.1:
+
+
+kubectl edit deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+deployment.apps/nginx-deployment edited
+Чтобы увидеть статус развертывания, запустите:
+
+
+kubectl rollout status deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+Waiting for rollout to finish: 2 out of 3 new replicas have been updated...
+или
+
+
+deployment.apps/nginx-deployment successfully rolled out
+Получить более подробную информацию о вашем обновленном Deployment:
+
+После успешного развертывания вы можете просмотреть Deployment, запустив kubectl get deployments. Вывод похож на следующий:
+
+
+NAME               DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment   3         3         3            3           36s
+Запустите kubectl get rs, чтобы увидеть, что Deployment обновил Pod'ы, создав новый ReplicaSet и масштабировав его до 3-х реплик, а также уменьшив старый ReplicaSet до 0 реплик.
+
+
+kubectl get rs
+Вывод:
+
+
+NAME                          DESIRED   CURRENT   READY   AGE
+nginx-deployment-1564180365   3         3         3       6s
+nginx-deployment-2035384211   0         0         0       36s
+Запуск get pods теперь должен показывать только новые Pod'ы:
+
+
+kubectl get pods
+Вывод:
+
+
+NAME                                READY     STATUS    RESTARTS   AGE
+nginx-deployment-1564180365-khku8   1/1       Running   0          14s
+nginx-deployment-1564180365-nacti   1/1       Running   0          14s
+nginx-deployment-1564180365-z9gth   1/1       Running   0          14s
+В следующий раз, когда вы захотите обновить эти Pod'ы, вам нужно только обновить шаблон Pod для Deployment снова.
+
+Deployment гарантирует, что только определенное количество Pod'ов отключено во время их обновления. По умолчанию гарантируется, что по крайней мере 75% от желаемого количества Pod'ов доступны (максимум 25% недоступны).
+
+Deployment также гарантирует, что только определенное количество Pod'ов создается свыше требуемого количества Pod'ов. По умолчанию гарантируется, что не более 25% от желаемого количества Pod'ов созданы свыше (максимальный всплеск 25%).
+
+Например, если вы внимательно посмотрите на приведенный выше Deployment, вы увидите, что он сначала создал новый Pod, затем удалил несколько старых Pod'ов и создал новые. Он не уничтожает старые Pod'ы, пока не появится достаточное количество новых Pod'ов, и не создает новые Pod'ы, пока не будет уничтожено достаточное количество старых Pod'ов. Он гарантирует, что доступно по крайней мере 2 Pod'а, а максимум 4 Pod'а.
+
+Получите подробную информацию о вашем Deployment:
+
+
+kubectl describe deployments
+Вывод:
+
+
+Name:                   nginx-deployment
+Namespace:              default
+CreationTimestamp:      Thu, 30 Nov 2017 10:56:25 +0000
+Labels:                 app=nginx
+Annotations:            deployment.kubernetes.io/revision=2
+Selector:               app=nginx
+Replicas:               3 desired | 3 updated | 3 total | 3 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+Labels:  app=nginx
+ Containers:
+  nginx:
+    Image:        nginx:1.9.1
+    Port:         80/TCP
+    Environment:  
+    Mounts:       
+  Volumes:        
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  
+NewReplicaSet:   nginx-deployment-1564180365 (3/3 replicas created)
+Events:
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+  Normal  ScalingReplicaSet  2m    deployment-controller  Scaled up replica set nginx-deployment-2035384211 to 3
+  Normal  ScalingReplicaSet  24s   deployment-controller  Scaled up replica set nginx-deployment-1564180365 to 1
+  Normal  ScalingReplicaSet  22s   deployment-controller  Scaled down replica set nginx-deployment-2035384211 to 2
+  Normal  ScalingReplicaSet  22s   deployment-controller  Scaled up replica set nginx-deployment-1564180365 to 2
+  Normal  ScalingReplicaSet  19s   deployment-controller  Scaled down replica set nginx-deployment-2035384211 to 1
+  Normal  ScalingReplicaSet  19s   deployment-controller  Scaled up replica set nginx-deployment-1564180365 to 3
+  Normal  ScalingReplicaSet  14s   deployment-controller  Scaled down replica set nginx-deployment-2035384211 to 0
+Здесь вы видите, что когда вы впервые создали Deployment, он создал ReplicaSet (nginx-deploy-2035384211) и напрямую масштабировал его до 3 реплик. Когда вы обновили Deployment, он создал новый ReplicaSet (nginx-deploy-1564180365) и масштабировал его до 1, а затем уменьшил старый ReplicaSet до 2, чтобы было доступно по крайней мере 2 Pod'а и максимум 4 Pod'а было создано за все время. Затем он продолжил масштабирование, увеличивая новый ReplicaSet и уменьшая старый ReplicaSet с той же стратегией непрерывного обновления. Наконец, у вас будет 3 доступных реплики в новом ReplicaSet, а старый ReplicaSet уменьшен до 0.
+
+Примечание. Развертывание Deployment запускается только тогда, когда изменяется шаблон Pod для Deployment (то есть .spec.template), например, если обновляются метки или образы контейнера шаблона. Другие обновления, такие как масштабирование Deployment, не запускают развертывание.
+
+Rollover (также известный как множественные обновления "на лету")
+Каждый раз, когда контроллер Deployment видит новый Deployment, создается ReplicaSet для вызова нужных Pod'ов. Если Deployment обновлен, существующий ReplicaSet, который управляет Pod'ами, чьи метки соответствуют .spec.selector, но чей шаблон не совпадает с .spec.template, уменьшается. В конце концов, новый ReplicaSet масштабируется до .spec.replicas, а все старые ReplicaSet масштабируются до 0.
+
+Если вы обновляете Deployment во время существующего rollover (развертывания), Deployment создает новый ReplicaSet в соответствии с обновлением и начинает масштабировать его, а также перебирает ReplicaSet, который он масштабировал ранее - он добавит его в свой список старых ReplicaSets и начнет уменьшать его.
+
+Предположим, что вы создали Deployment для создания 5 реплик nginx:1.7.9, но затем обновили Deployment, чтобы создать 5 реплик nginx:1.9.1, когда были созданы только 3 реплики nginx:1.7.9. В этом случае Deployment немедленно начинает завершать 3 созданных им nginx:1.7.9, и начинает создавать nginx:1.9.1. Он не ждет создания 5 реплик nginx:1.7.9, прежде чем менять курс.
+
+Обновления селектора меток
+Как правило, не рекомендуется обновлять селекторы меток, поэтому рекомендуется заранее планировать селекторы. В любом случае, если вам нужно выполнить обновление селектора меток, будьте очень осторожны и убедитесь, что вы поняли все последствия.
+
+Примечание. В API-версии apps/v1 селектор меток Deployment'а является неизменным после его создания.
+
+Для добавления селекторов необходимо, чтобы метки шаблона Pod в спецификации Deployment также были обновлены с помощью новой метки, в противном случае возвращается ошибка проверки. Это изменение не является перекрывающимся, что означает, что новый селектор не выбирает наборы ReplicaSet и Pod, созданные с помощью старого селектора, что приводит к потере всех старых наборов ReplicaSet и созданию нового набора ReplicaSet.
+Обновления селектора изменяет существующее значение в ключе селектора - приводит к тому же поведению, что и добавления селекторов.
+Удаление селекторов удаляет существующий ключ из селектора Deployment - не требуется никаких изменений в метках шаблона Pod. Существующие наборы ReplicaSets не являются потерянными, и новый набор ReplicaSet не создается, но обратите внимание, что удаленная метка все еще существует в любых существующих Pod и ReplicaSets.
