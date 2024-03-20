@@ -1,0 +1,375 @@
+Соединение приложений с сервисами
+
+Модель Kubernetes для соединения контейнеров
+Теперь, когда у вас есть постоянно работающее, реплицируемое приложение, вы можете открыть его в сети. Прежде чем обсуждать подход Kubernetes к созданию сетей, стоит сравнить его с "обычным" способом работы сетей с Docker.
+
+По умолчанию Docker использует частную сеть, поэтому контейнеры могут общаться с другими контейнерами, только если они находятся на одной машине. Чтобы контейнеры Docker могли обмениваться данными между узлами, на собственном IP-адресе машины должны быть выделены порты, которые затем перенаправляются или передаются в контейнеры. Это, очевидно, означает, что контейнеры должны либо координировать, какие порты они используют очень осторожно, либо порты должны распределяться динамически.
+
+Координировать порты между несколькими разработчиками очень сложно в масштабе, и пользователи подвергаются проблемам уровня кластера вне их контроля. Kubernetes предполагает, что Pod'ы могут общаться с другими Pod'ами, независимо от того, на каком хосте они приземляются. Каждому Pod'у присваивается собственный IP-адрес кластера, поэтому вам не нужно явно создавать ссылки между Pod'ами или сопоставлять порты контейнера с портами хоста. Это означает, что все контейнеры в Pod'е могут достигать портов друг друга на локальном хосте, и все Pod'ы в кластере могут видеть друг друга без NAT. В оставшейся части этого поста будет подробно рассказано, как вы можете запускать надежные сервисы в такой сетевой модели.
+
+Это руководство использует простой сервер nginx для демонстрации подтверждения концепции.
+
+Представление Pod'ов кластеру
+Создайте Pod nginx и обратите внимание, что он имеет спецификацию порта контейнера:
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nginx
+spec:
+  selector:
+    matchLabels:
+      run: my-nginx
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        run: my-nginx
+    spec:
+      containers:
+      - name: my-nginx
+        image: nginx
+        ports:
+        - containerPort: 80
+Это делает его доступным с любого узла в вашем кластере. Проверьте узлы, на которых работает Pod:
+
+
+kubectl apply -f ./run-my-nginx.yaml
+kubectl get pods -l run=my-nginx -o wide
+
+NAME                        READY     STATUS    RESTARTS   AGE       IP            NODE
+my-nginx-3800858182-jr4a2   1/1       Running   0          13s       10.244.3.4    kubernetes-minion-905m
+my-nginx-3800858182-kna2y   1/1       Running   0          13s       10.244.2.5    kubernetes-minion-ljyd
+Проверьте IP-адреса ваших Pod'ов:
+
+
+kubectl get pods -l run=my-nginx -o yaml | grep podIP
+
+    podIP: 10.244.3.4
+    podIP: 10.244.2.5
+Вы должны иметь возможность подключиться к любому узлу в вашем кластере и свернуть оба IP-адреса. Обратите внимание, что контейнеры не используют порт 80 на узле, и при этом нет никаких специальных правил NAT для маршрутизации трафика в Pod. Это означает, что вы можете запускать несколько Pod'ов nginx на одном и том же узле, используя один и тот же containerPort, и получать к ним доступ из любого другого Pod'а или узла в кластере, используя IP. Как и в Docker, порты по-прежнему можно публиковать в интерфейсах хост-узла, но необходимость в этом радикально уменьшается из-за сетевой модели.
+
+Создание сервиса
+Таким образом, у нас есть Pod'ы, запускающие nginx в плоском адресном пространстве шириной кластера. Теоретически, вы можете напрямую общаться с этими Pod'ами, но что происходит, когда умирает узел? Pod'ы умирают вместе с ним, и Deployment создаст новые с разными IP-адресами. Это проблема, которую решает Сервис.
+
+Сервис Kubernetes - это абстракция, которая определяет логический набор Pod'ов, работающих где-то в вашем кластере, которые обеспечивают одинаковую функциональность. При создании каждому сервису присваивается уникальный IP-адрес (также называемый clusterIP). Этот адрес привязан к сроку службы Сервиса и не изменится, пока Сервис активен. Контейнеры могут быть настроены для общения с сервисом, и они знают, что связь с сервисом будет автоматически распределена по нагрузке для некоторого Pod'а, который является участником сервиса.
+
+Вы можете создать Сервис для ваших 2 реплик nginx с помощью kubectl expose:
+
+
+kubectl expose deployment/my-nginx
+
+service/my-nginx exposed
+Это эквивалентно kubectl apply -f для следующего yaml:
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-nginx
+  labels:
+    run: my-nginx
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+  selector:
+    run: my-nginx
+Эта спецификация создаст Сервис, который нацелен на TCP-порт 80 на любом Pod'е с меткой run: my-nginx, и выставит его на абстрактном порте сервиса (targetPort: порт, на который контейнер принимает трафик, port: абстрагированный порт сервиса, который может быть любым портом, используемым другими Pod'ами для доступа к Сервису). Просмотрите объект API Сервиса, чтобы увидеть список поддерживаемых полей в определении сервиса. Проверьте ваш сервис:
+
+
+kubectl get svc my-nginx
+
+NAME       TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+my-nginx   ClusterIP   10.0.162.149           80/TCP    21s
+Как упомянуто ранее, Сервис поддерживается группой Pod'ов. Эти Pod'ы выставляются через конечные точки. Селектор сервиса будет оцениваться непрерывно, а результаты будут отправлены в объект конечных точек, также называемый my-nginx. Когда Pod умирает, он автоматически удаляется с конечных точек, и новые Pod'ы, соответствующие селектору сервиса, автоматически добавляются к конечным точкам. Проверьте конечные точки и обратите внимание, что IP-адреса совпадают с IP-адресами, созданными на первом шаге:
+
+
+kubectl describe svc my-nginx
+
+Name:                my-nginx
+Namespace:           default
+Labels:              run=my-nginx
+Annotations:         
+Selector:            run=my-nginx
+Type:                ClusterIP
+IP:                  10.0.162.149
+Port:                 80/TCP
+Endpoints:           10.244.2.5:80,10.244.3.4:80
+Session Affinity:    None
+Events:              
+
+kubectl get ep my-nginx
+
+NAME       ENDPOINTS                     AGE
+my-nginx   10.244.2.5:80,10.244.3.4:80   1m
+Теперь вы сможете свернуть сервис nginx на <CLUSTER-IP>:<PORT> с любого узла в вашем кластере. Обратите внимание, что IP-адрес сервиса полностью виртуален, он никогда не подключается.
+
+Доступ к сервису
+Kubernetes поддерживает 2 основных режима поиска Сервиса - переменные среды и DNS. Первый работает "из коробки", а второй требует дополнения кластера CoreDNS.
+
+Примечание. Если переменные среды сервиса нежелательны (поскольку возможно конфликтование с ожидаемыми программными переменными, слишком много переменных для обработки, только с использованием DNS и т. д.), вы можете отключить этот режим, установив для флага enableServiceLinks значение false в спецификации Pod'а.
+
+Переменные среды
+Когда Pod запускается на Node, kubelet добавляет набор переменных среды для каждого активного сервиса. Это вводит проблему заказа. Чтобы понять почему, проверьте среду ваших работающих Pod'ов nginx (ваше имя Pod'а будет другим):
+
+
+kubectl exec my-nginx-3800858182-jr4a2 -- printenv | grep SERVICE
+
+KUBERNETES_SERVICE_HOST=10.0.0.1
+KUBERNETES_SERVICE_PORT=443
+KUBERNETES_SERVICE_PORT_HTTPS=443
+Обратите внимание, что там нет упоминания о вашем сервисе. Это потому, что вы создали реплики до Сервиса. Другим недостатком этого является то, что планировщик может установить оба Pod'а на одну и ту же машину, что приведет к отключению всего сервиса в случае ее отключения. Можно сделать это правильным способом, завершив 2 Pod'а и ожидая, пока Deployment воссоздает их. На этот раз Сервис существует до реплик. Это даст вам распространение Сервиса на уровне планировщика ваших Pod'ов (при условии, что все ваши узлы имеют одинаковую емкость), а также правильные переменные среды:
+
+
+kubectl scale deployment my-nginx --replicas=0; kubectl scale deployment my-nginx --replicas=2;
+
+kubectl get pods -l run=my-nginx -o wide
+
+NAME                        READY     STATUS    RESTARTS   AGE     IP            NODE
+my-nginx-3800858182-e9ihh   1/1       Running   0          5s      10.244.2.7    kubernetes-minion-ljyd
+my-nginx-3800858182-j4rm4   1/1       Running   0          5s      10.244.3.8    kubernetes-minion-905m
+Вы можете заметить, что Pod'ы имеют разные названия, так как они завершены и воссозданы.
+
+
+kubectl exec my-nginx-3800858182-e9ihh -- printenv | grep SERVICE
+
+KUBERNETES_SERVICE_PORT=443
+MY_NGINX_SERVICE_HOST=10.0.162.149
+KUBERNETES_SERVICE_HOST=10.0.0.1
+MY_NGINX_SERVICE_PORT=80
+KUBERNETES_SERVICE_PORT_HTTPS=443
+DNS
+Kubernetes предлагает дополнительный сервис кластера DNS, который автоматически присваивает DNS-имена другим сервисам. Вы можете проверить, работает ли он в вашем кластере:
+
+
+kubectl get services kube-dns --namespace=kube-system
+
+NAME       TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)         AGE
+kube-dns   ClusterIP   10.0.0.10            53/UDP,53/TCP   8m
+Если он не запущен, вы можете включить его. В оставшейся части этого раздела предполагается, что у вас есть Сервис с долгоживущим IP-адресом (my-nginx) и DNS-сервер, который назначил имя этому IP-адресу (дополнение кластера CoreDNS), так что вы можете общаться с Сервисом с любого pod в вашем кластере, используя стандартные методы (например, gethostbyname). Запустим другое приложение curl, чтобы проверить это:
+
+
+kubectl run curl --image=radial/busyboxplus:curl -i --tty
+
+Waiting for pod default/curl-131556218-9fnch to be running, status is Pending, pod ready: false
+Hit enter for command prompt
+Затем нажмите Enter и запустите nslookup my-nginx:
+
+
+[ root@curl-131556218-9fnch:/ ]$ nslookup my-nginx
+Server:    10.0.0.10
+Address 1: 10.0.0.10
+
+Name:      my-nginx
+Address 1: 10.0.162.149
+Обеспечение безопасности сервиса
+До сих пор мы обращались только к серверу nginx из кластера. Прежде чем открывать Сервис для Интернета, вы хотите убедиться в безопасности канала связи. Для этого вам понадобится:
+
+Самозаверяющие сертификаты для https (если у вас уже нет identity сертификата)
+Сервер nginx, настроенный на использование сертификатов
+Секрет, который делает сертификаты доступными для Pod'ов
+Вы можете получить все это из примера https от nginx. Для него требуется, чтобы были установлены go и make инструменты. Если вы не хотите устанавливать их, следуйте инструкциям ниже.
+
+
+make keys secret KEY=/tmp/nginx.key CERT=/tmp/nginx.crt SECRET=/tmp/secret.json
+kubectl apply -f /tmp/secret.json
+
+secret/nginxsecret created
+
+kubectl get secrets
+
+NAME                  TYPE                                  DATA      AGE
+default-token-il9rc   kubernetes.io/service-account-token   1         1d
+nginxsecret           Opaque                                2         1m
+Ниже приведены шаги, которые необходимо выполнить в случае возникновения проблем при запуске make (например, в Windows):
+
+
+#создать пару публичного и приватного ключа
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /d/tmp/nginx.key -out /d/tmp/nginx.crt -subj "/CN=my-nginx/O=my-nginx"
+#преобразовать ключи в base64 кодировку
+cat /d/tmp/nginx.crt | base64
+cat /d/tmp/nginx.key | base64
+Используйте выходные данные из предыдущих команд, чтобы создать файл yaml следующим образом. Значение в кодировке base64 должно быть в одной строке.
+
+
+apiVersion: "v1"
+kind: "Secret"
+metadata:
+  name: "nginxsecret"
+  namespace: "default"
+data:
+  nginx.crt: "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURIekNDQWdlZ0F3SUJBZ0lKQUp5M3lQK0pzMlpJTUEwR0NTcUdTSWIzRFFFQkJRVUFNQ1l4RVRBUEJnTlYKQkFNVENHNW5hVzU0YzNaak1SRXdEd1lEVlFRS0V3aHVaMmx1ZUhOMll6QWVGdzB4TnpFd01qWXdOekEzTVRKYQpGdzB4T0RFd01qWXdOekEzTVRKYU1DWXhFVEFQQmdOVkJBTVRDRzVuYVc1NGMzWmpNUkV3RHdZRFZRUUtFd2h1CloybHVlSE4yWXpDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBSjFxSU1SOVdWM0IKMlZIQlRMRmtobDRONXljMEJxYUhIQktMSnJMcy8vdzZhU3hRS29GbHlJSU94NGUrMlN5ajBFcndCLzlYTnBwbQppeW1CL3JkRldkOXg5UWhBQUxCZkVaTmNiV3NsTVFVcnhBZW50VWt1dk1vLzgvMHRpbGhjc3paenJEYVJ4NEo5Ci82UVRtVVI3a0ZTWUpOWTVQZkR3cGc3dlVvaDZmZ1Voam92VG42eHNVR0M2QURVODBpNXFlZWhNeVI1N2lmU2YKNHZpaXdIY3hnL3lZR1JBRS9mRTRqakxCdmdONjc2SU90S01rZXV3R0ljNDFhd05tNnNTSzRqYUNGeGpYSnZaZQp2by9kTlEybHhHWCtKT2l3SEhXbXNhdGp4WTRaNVk3R1ZoK0QrWnYvcW1mMFgvbVY0Rmo1NzV3ajFMWVBocWtsCmdhSXZYRyt4U1FVQ0F3RUFBYU5RTUU0d0hRWURWUjBPQkJZRUZPNG9OWkI3YXc1OUlsYkROMzhIYkduYnhFVjcKTUI4R0ExVWRJd1FZTUJhQUZPNG9OWkI3YXc1OUlsYkROMzhIYkduYnhFVjdNQXdHQTFVZEV3UUZNQU1CQWY4dwpEUVlKS29aSWh2Y05BUUVGQlFBRGdnRUJBRVhTMW9FU0lFaXdyMDhWcVA0K2NwTHI3TW5FMTducDBvMm14alFvCjRGb0RvRjdRZnZqeE04Tzd2TjB0clcxb2pGSW0vWDE4ZnZaL3k4ZzVaWG40Vm8zc3hKVmRBcStNZC9jTStzUGEKNmJjTkNUekZqeFpUV0UrKzE5NS9zb2dmOUZ3VDVDK3U2Q3B5N0M3MTZvUXRUakViV05VdEt4cXI0Nk1OZWNCMApwRFhWZmdWQTRadkR4NFo3S2RiZDY5eXM3OVFHYmg5ZW1PZ05NZFlsSUswSGt0ejF5WU4vbVpmK3FqTkJqbWZjCkNnMnlwbGQ0Wi8rUUNQZjl3SkoybFIrY2FnT0R4elBWcGxNSEcybzgvTHFDdnh6elZPUDUxeXdLZEtxaUMwSVEKQ0I5T2wwWW5scE9UNEh1b2hSUzBPOStlMm9KdFZsNUIyczRpbDlhZ3RTVXFxUlU9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K"
+  nginx.key: "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2UUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktjd2dnU2pBZ0VBQW9JQkFRQ2RhaURFZlZsZHdkbFIKd1V5eFpJWmVEZWNuTkFhbWh4d1NpeWF5N1AvOE9ta3NVQ3FCWmNpQ0RzZUh2dGtzbzlCSzhBZi9WemFhWm9zcApnZjYzUlZuZmNmVUlRQUN3WHhHVFhHMXJKVEVGSzhRSHA3VkpMcnpLUC9QOUxZcFlYTE0yYzZ3MmtjZUNmZitrCkU1bEVlNUJVbUNUV09UM3c4S1lPNzFLSWVuNEZJWTZMMDUrc2JGQmd1Z0ExUE5JdWFubm9UTWtlZTRuMG4rTDQKb3NCM01ZUDhtQmtRQlAzeE9JNHl3YjREZXUraURyU2pKSHJzQmlIT05Xc0RadXJFaXVJMmdoY1kxeWIyWHI2UAozVFVOcGNSbC9pVG9zQngxcHJHclk4V09HZVdPeGxZZmcvbWIvNnBuOUYvNWxlQlkrZStjSTlTMkQ0YXBKWUdpCkwxeHZzVWtGQWdNQkFBRUNnZ0VBZFhCK0xkbk8ySElOTGo5bWRsb25IUGlHWWVzZ294RGQwci9hQ1Zkank4dlEKTjIwL3FQWkUxek1yall6Ry9kVGhTMmMwc0QxaTBXSjdwR1lGb0xtdXlWTjltY0FXUTM5SjM0VHZaU2FFSWZWNgo5TE1jUHhNTmFsNjRLMFRVbUFQZytGam9QSFlhUUxLOERLOUtnNXNrSE5pOWNzMlY5ckd6VWlVZWtBL0RBUlBTClI3L2ZjUFBacDRuRWVBZmI3WTk1R1llb1p5V21SU3VKdlNyblBESGtUdW1vVlVWdkxMRHRzaG9reUxiTWVtN3oKMmJzVmpwSW1GTHJqbGtmQXlpNHg0WjJrV3YyMFRrdWtsZU1jaVlMbjk4QWxiRi9DSmRLM3QraTRoMTVlR2ZQegpoTnh3bk9QdlVTaDR2Q0o3c2Q5TmtEUGJvS2JneVVHOXBYamZhRGR2UVFLQmdRRFFLM01nUkhkQ1pKNVFqZWFKClFGdXF4cHdnNzhZTjQyL1NwenlUYmtGcVFoQWtyczJxWGx1MDZBRzhrZzIzQkswaHkzaE9zSGgxcXRVK3NHZVAKOWRERHBsUWV0ODZsY2FlR3hoc0V0L1R6cEdtNGFKSm5oNzVVaTVGZk9QTDhPTm1FZ3MxMVRhUldhNzZxelRyMgphRlpjQ2pWV1g0YnRSTHVwSkgrMjZnY0FhUUtCZ1FEQmxVSUUzTnNVOFBBZEYvL25sQVB5VWs1T3lDdWc3dmVyClUycXlrdXFzYnBkSi9hODViT1JhM05IVmpVM25uRGpHVHBWaE9JeXg5TEFrc2RwZEFjVmxvcG9HODhXYk9lMTAKMUdqbnkySmdDK3JVWUZiRGtpUGx1K09IYnRnOXFYcGJMSHBzUVpsMGhucDBYSFNYVm9CMUliQndnMGEyOFVadApCbFBtWmc2d1BRS0JnRHVIUVV2SDZHYTNDVUsxNFdmOFhIcFFnMU16M2VvWTBPQm5iSDRvZUZKZmcraEppSXlnCm9RN3hqWldVR3BIc3AyblRtcHErQWlSNzdyRVhsdlhtOElVU2FsbkNiRGlKY01Pc29RdFBZNS9NczJMRm5LQTQKaENmL0pWb2FtZm1nZEN0ZGtFMXNINE9MR2lJVHdEbTRpb0dWZGIwMllnbzFyb2htNUpLMUI3MkpBb0dBUW01UQpHNDhXOTVhL0w1eSt5dCsyZ3YvUHM2VnBvMjZlTzRNQ3lJazJVem9ZWE9IYnNkODJkaC8xT2sybGdHZlI2K3VuCnc1YytZUXRSTHlhQmd3MUtpbGhFZDBKTWU3cGpUSVpnQWJ0LzVPbnlDak9OVXN2aDJjS2lrQ1Z2dTZsZlBjNkQKckliT2ZIaHhxV0RZK2Q1TGN1YSt2NzJ0RkxhenJsSlBsRzlOZHhrQ2dZRUF5elIzT3UyMDNRVVV6bUlCRkwzZAp4Wm5XZ0JLSEo3TnNxcGFWb2RjL0d5aGVycjFDZzE2MmJaSjJDV2RsZkI0VEdtUjZZdmxTZEFOOFRwUWhFbUtKCnFBLzVzdHdxNWd0WGVLOVJmMWxXK29xNThRNTBxMmk1NVdUTThoSDZhTjlaMTltZ0FGdE5VdGNqQUx2dFYxdEYKWSs4WFJkSHJaRnBIWll2NWkwVW1VbGc9Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"
+Теперь создайте секреты, используя созданный файл:
+
+
+kubectl apply -f nginxsecrets.yaml
+kubectl get secrets
+
+NAME                  TYPE                                  DATA      AGE
+default-token-il9rc   kubernetes.io/service-account-token   1         1d
+nginxsecret           Opaque                                2         1m
+Теперь измените ваши реплики nginx, чтобы запустить сервер https, используя секретный сертификат, и сервис, чтобы открыть оба порта (80 и 443):
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-nginx
+  labels:
+    run: my-nginx
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 80
+    protocol: TCP
+    name: http
+  - port: 443
+    protocol: TCP
+    name: https
+  selector:
+    run: my-nginx
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nginx
+spec:
+  selector:
+    matchLabels:
+      run: my-nginx
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        run: my-nginx
+    spec:
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: nginxsecret
+      containers:
+      - name: nginxhttps
+        image: bprashanth/nginxhttps:1.0
+        ports:
+        - containerPort: 443
+        - containerPort: 80
+        volumeMounts:
+        - mountPath: /etc/nginx/ssl
+          name: secret-volume
+Примечательные моменты о манифесте nginx-secure-app:
+
+Он содержит спецификации Deployment и сервиса в одном файле.
+Сервер nginx обслуживает HTTP-трафик через порт 80 и HTTPS-трафик через 443, а сервиc nginx предоставляет оба порта.
+Каждый контейнер имеет доступ к ключам через том, смонтированный в /etc/nginx/ssl. Это настройка до запуска сервера nginx.
+
+kubectl delete deployments,svc my-nginx; kubectl create -f ./nginx-secure-app.yaml
+На этом этапе вы можете получить доступ к серверу nginx с любого узла.
+
+
+kubectl get pods -o yaml | grep -i podip
+    podIP: 10.244.3.5
+node $ curl -k https://10.244.3.5
+...
+<h1>Welcome to nginx!</h1>
+Обратите внимание, как мы указали параметр -k для curl на последнем шаге, это потому, что мы ничего не знаем о Pod'ах, запускающих nginx во время генерации сертификата, поэтому мы должны указать curl игнорировать несоответствие CName. Создав Сервис, мы связали используемое в сертификате CName с фактическим DNS-именем, используемым Pod'ами во время поиска Сервиса. Проверим это из Pod'а (тот же самый секрет используется для простоты, для доступа к Сервису для Pod'а требуется только nginx.crt):
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl-deployment
+spec:
+  selector:
+    matchLabels:
+      app: curlpod
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: curlpod
+    spec:
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: nginxsecret
+      containers:
+      - name: curlpod
+        command:
+        - sh
+        - -c
+        - while true; do sleep 1; done
+        image: radial/busyboxplus:curl
+        volumeMounts:
+        - mountPath: /etc/nginx/ssl
+          name: secret-volume
+
+kubectl apply -f ./curlpod.yaml
+kubectl get pods -l app=curlpod
+
+NAME                               READY     STATUS    RESTARTS   AGE
+curl-deployment-1515033274-1410r   1/1       Running   0          1m
+
+kubectl exec curl-deployment-1515033274-1410r -- curl https://my-nginx --cacert /etc/nginx/ssl/nginx.crt
+...
+
+...
+Представление Сервиса
+Для некоторых частей ваших приложений вы можете разместить Сервис на внешнем IP-адресе. Kubernetes поддерживает два способа сделать это: NodePorts и LoadBalancers. Сервис, созданный в последнем разделе, уже использовал NodePort, поэтому ваша реплика HTTPS nginx готова обслуживать трафик в Интернете, если ваш узел имеет публичный IP-адрес.
+
+
+kubectl get svc my-nginx -o yaml | grep nodePort -C 5
+  uid: 07191fb3-f61a-11e5-8ae5-42010af00002
+spec:
+  clusterIP: 10.0.162.149
+  ports:
+  - name: http
+    nodePort: 31704
+    port: 8080
+    protocol: TCP
+    targetPort: 80
+  - name: https
+    nodePort: 32453
+    port: 443
+    protocol: TCP
+    targetPort: 443
+  selector:
+    run: my-nginx
+
+kubectl get nodes -o yaml | grep ExternalIP -C 1
+    - address: 104.197.41.11
+      type: ExternalIP
+    allocatable:
+--
+    - address: 23.251.152.56
+      type: ExternalIP
+    allocatable:
+...
+
+$ curl https://: -k
+...
+<h1>Welcome to nginx!</h1>
+Теперь заново создадим Сервис, чтобы использовать облачный балансировщик нагрузки, просто изменим Type сервиса my-nginx с NodePort на LoadBalancer:
+
+
+kubectl edit svc my-nginx
+kubectl get svc my-nginx
+
+NAME       TYPE        CLUSTER-IP     EXTERNAL-IP        PORT(S)               AGE
+my-nginx   ClusterIP   10.0.162.149   162.222.184.144    80/TCP,81/TCP,82/TCP  21s
+
+curl https://<EXTERNAL-IP> -k
+...
+<title>Welcome to nginx!</title>
+IP-адрес в столбце EXTERNAL-IP является тем, который доступен в общедоступном Интернете. CLUSTER-IP доступен только внутри вашей сети кластера/частного облака.
+
+Обратите внимание, что в AWS тип LoadBalancer создает ELB, который использует (длинное) имя хоста, а не IP. Фактически, оно слишком длинное, чтобы вписаться в стандартный kubectl get svc output, поэтому для его просмотра вам понадобится kubectl describe service my-nginx. Вы увидите что-то вроде этого:
+
+
+kubectl describe service my-nginx
+...
+LoadBalancer Ingress:   a320587ffd19711e5a37606cf4a74574-1142138393.us-east-1.elb.amazonaws.com
+...
