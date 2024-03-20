@@ -1,0 +1,108 @@
+Контроллеры в Kubernetes: Garbage Collection
+
+Роль сборщика мусора в Kubernetes заключается в удалении определенных объектов, которые когда-то имели владельца, но у которых больше нет владельца.
+
+Владельцы и зависимые объекты
+Некоторые объекты Kubernetes являются владельцами других объектов. Например, ReplicaSet является владельцем набора Pod'ов. Собственные объекты называются зависимыми от объекта-владельца. Каждый зависимый объект имеет поле metadata.ownerReferences, которое указывает на владельца объекта.
+
+Иногда Kubernetes устанавливает значение ownerReference автоматически. Например, когда вы создаете ReplicaSet, Kubernetes автоматически устанавливает поле ownerReference каждого Pod в ReplicaSet. В версии 1.8 Kubernetes автоматически устанавливает значение ownerReference для объектов, созданных или принятых ReplicationController, ReplicaSet, StatefulSet, DaemonSet, Deployment, Job и CronJob.
+
+Вы также можете указать отношения между владельцами и зависимыми, вручную установив поле ownerReference.
+
+Вот файл конфигурации для ReplicaSet, который имеет три Pod'а:
+
+
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: my-repset
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      pod-is-for: garbage-collection-example
+  template:
+    metadata:
+      labels:
+        pod-is-for: garbage-collection-example
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+Если вы создаете ReplicaSet и затем просматриваете метаданные Pod, вы можете увидеть поле OwnerReferences:
+
+
+kubectl apply -f https://k8s.io/examples/controllers/replicaset.yaml
+kubectl get pods --output=yaml
+Вывод показывает, что владельцем Pod является ReplicaSet с именем my-repset:
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  ...
+  ownerReferences:
+  - apiVersion: apps/v1
+    controller: true
+    blockOwnerDeletion: true
+    kind: ReplicaSet
+    name: my-repset
+    uid: d9607e19-f88f-11e6-a518-42010a800195
+  ...
+Примечание. Перекрестные ссылки на владельцев пространств имен не допускаются. Это означает: 1) Зависимые в пространстве имен могут указывать только владельцев в одном и том же пространстве имен и владельцев в кластерной области. 2) Зависимые кластерной области могут указывать только владельцев кластерной области, но не владельцев пространства имен.
+
+Управление тем, как сборщик мусора удаляет зависимых
+Когда вы удаляете объект, вы можете указать, будут ли автоматически удалены его зависимые. Удаление зависимых автоматически называется каскадным удалением. Существует два режима каскадного удаления: в фоне (background) и явно (foreground).
+
+Если вы удаляете объект, не удаляя его зависимых автоматически, то они называются осиротевшими.
+
+Каскадное удаление в явном виде (foreground)
+При каскадном удалении в явном виде корневой объект сначала переходит в состояние "выполняется удаление" (deletion in progress). В состоянии "выполняется удаление" выполняются следующие условия:
+
+Объект все еще виден через REST API
+Объект deletetionTimestamp установлен
+Metadata.finalizers объекта содержит значение “foregroundDeletion”.
+Как только появляется состояние "выполняется удаление", сборщик мусора удаляет зависимые объекты объекта. После того, как сборщик мусора удалит все "блокирующие" зависимые объекты (объекты с ownerReference.blockOwnerDeletion = true), он удалит объект владельца.
+
+Обратите внимание, что в “foregroundDeletion” только зависимые объекты с ownerReference.blockOwnerDeletion = true блокируют удаление объекта владельца. В Kubernetes версии 1.7 добавлен контроллер доступа (admission controller), который управляет доступом пользователей, чтобы установить для blockOwnerDeletion значение true на основании разрешений на удаление объекта-владельца, чтобы неавторизованные завимые объекты не могли задержать удаление объекта-владельца.
+
+Если поле ownerReferences объекта установлено контроллером (например, Deployment или ReplicaSet), blockOwnerDeletion устанавливается автоматически, и вам не нужно вручную изменять это поле.
+
+Каскадное удаление в фоне (background)
+В фоновом каскадном удалении Kubernetes немедленно удаляет объект-владелец, а сборщик мусора затем удаляет зависимые объекты в фоновом режиме.
+
+Установка политики каскадного удаления
+Чтобы управлять каскадной политикой удаления, установите поле propagationPolicy на аргументе deleteOptions при удалении объекта. Возможные значения: “Orphan”, “Foreground”, или “Background”.
+
+До Kubernetes 1.9 политика сбора мусора по умолчанию для многих ресурсов контроллера была Orphan. Это включает ReplicationController, ReplicaSet, StatefulSet, DaemonSet и Deployment. Для kind в версиях групп extensions/v1beta1, apps/v1beta1, apps/v1beta2, если не указано иное, зависимые объекты по умолчанию являются Orphan. В Kubernetes 1.9 для всех видов в версии группы apps/v1 зависимые объекты удаляются по умолчанию.
+
+Вот пример, который удаляет зависимых в фоновом режиме:
+
+
+kubectl proxy --port=8080
+curl -X DELETE localhost:8080/apis/apps/v1/namespaces/default/replicasets/my-repset \
+  -d '{"kind":"DeleteOptions","apiVersion":"v1","propagationPolicy":"Background"}' \
+  -H "Content-Type: application/json"
+Вот пример, который удаляет зависимости в явном виде (foreground):
+
+
+kubectl proxy --port=8080
+curl -X DELETE localhost:8080/apis/apps/v1/namespaces/default/replicasets/my-repset \
+  -d '{"kind":"DeleteOptions","apiVersion":"v1","propagationPolicy":"Foreground"}' \
+  -H "Content-Type: application/json"
+Вот пример который, оставляет зависимых сиротами:
+
+
+kubectl proxy --port=8080
+curl -X DELETE localhost:8080/apis/apps/v1/namespaces/default/replicasets/my-repset \
+  -d '{"kind":"DeleteOptions","apiVersion":"v1","propagationPolicy":"Orphan"}' \
+  -H "Content-Type: application/json"
+kubectl также поддерживает каскадное удаление. Для автоматического удаления зависимостей с помощью kubectl установите для --cascade равным true. Чтобы сделать сиротами зависимых, установите --cascade в false. Значение по умолчанию для --cascade это true.
+
+Вот пример, который оставляет зависимых от ReplicaSet сиротами:
+
+
+kubectl delete replicaset my-repset --cascade=false
+Дополнительная заметка о Deployment
+
+До 1.7, при использовании каскадного удаления с Deployment, вы должны использовать propagationPolicy: Foreground для удаления не только созданных ReplicaSets, но и их Pod'ов. Если этот тип propagationPolicy не используется, удаляются только ReplicaSet, а Pod'ы будут оставлены сиротами.
