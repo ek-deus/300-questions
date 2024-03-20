@@ -1,0 +1,142 @@
+Контроллеры в Kubernetes: Deployment, состояние (status)
+
+Deployment входит в различные состояния (status) в течение своего жизненного цикла. Он может прогрессировать (progressing) при развертывании нового ReplicaSet, может быть завершен (complete) или может потерпеть неудачу при прогрессировании (fail to progress).
+
+Прогрессирующий Deployment
+Kubernetes помечает Deployment как прогрессирующий (progressing), когда выполняется одна из следующих задач:
+
+Deployment создает новый ReplicaSet.
+Deployment расширяет свой новейший ReplicaSet.
+Deployment сокращает свои старые ReplicaSet.
+Новые Pod'ы становятся готовыми или доступными (готовыми как минимум за MinReadySeconds).
+Вы можете следить за ходом Deployment, используя kubectl rollout status.
+
+Завершенный Deployment
+Kubernetes отмечает Deployment как завершенный (complete), если он имеет следующие характеристики:
+
+Все реплики, связанные с Deployment, были обновлены до последней указанной вами версии, что означает, что все запрошенные вами обновления были выполнены.
+Доступны все реплики, связанные с Deployment.
+Старые реплики для Deployment не запущены.
+Вы можете проверить, завершен ли Deployment, используя kubectl rollout status. Если развертывание завершено успешно, kubectl rollout status возвращает нулевой код выхода.
+
+
+kubectl rollout status deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+Waiting for rollout to finish: 2 of 3 updated replicas are available...
+deployment.apps/nginx-deployment successfully rolled out
+$ echo $?
+0
+Неудавшийся Deployment
+Ваш Deployment может застрять при попытке развернуть его новейший ReplicaSet, даже не завершив его. Это может произойти из-за некоторых из следующих факторов:
+
+Недостаточная квота
+Сбои проб готовности
+Ошибки загрузки образа
+Недостаточно разрешений
+Предел диапазонов
+Неправильная конфигурация приложения
+Одним из способов обнаружения этого условия является указание параметра крайнего срока (deadline) в спецификации Deployment: (.spec.progressDeadlineSeconds). .spec.progressDeadlineSeconds обозначает количество секунд, в течение которых контроллер Deployment ждет, прежде чем указать (в состоянии Deployment), что процесс Deployment остановлен.
+
+Следующая команда kubectl устанавливает спецификацию с progressDeadlineSeconds, чтобы контроллер сообщал об отсутствии прогресса для Deployment через 10 минут:
+
+
+kubectl patch deployment.v1.apps/nginx-deployment -p '{"spec":{"progressDeadlineSeconds":600}}'
+Вывод:
+
+
+deployment.apps/nginx-deployment patched
+По истечении крайнего срока контроллер Deployment добавляет условие DeploymentCondition со следующими атрибутами в .status.conditions для Deployment:
+
+Type=Progressing
+Status=False
+Reason=ProgressDeadlineExceeded
+Примечание. Kubernetes не предпринимает никаких действий для остановленного (stalled) Deployment, кроме как сообщает в состоянии Reason=ProgressDeadlineExceeded. Оркестраторы более высокого уровня могут воспользоваться этим и действовать соответственно, например, откатить Deployment до его предыдущей версии.
+
+Примечание. Если вы приостанавливаете Deployment, Kubernetes не проверяет ход выполнения в указанный срок. Вы можете безопасно приостановить Deployment в середине развертывания и возобновить работу, не вызывая условия превышения срока.
+
+Вы можете столкнуться с временными ошибками в ваших Deployment, либо из-за установленного вами небольшого тайм-аута, либо из-за любых других ошибок, которые можно рассматривать как временные. Например, допустим, у вас недостаточно квоты. Если вы описываете Deployment, вы заметите следующий раздел:
+
+
+kubectl describe deployment nginx-deployment
+Вывод
+
+
+<...>
+Conditions:
+  Type            Status  Reason
+  ----            ------  ------
+  Available       True    MinimumReplicasAvailable
+  Progressing     True    ReplicaSetUpdated
+  ReplicaFailure  True    FailedCreate
+<...>
+Если вы запустите kubectl get deployment nginx-deployment -o yaml, состояние Deployment будет примерно таким:
+
+
+status:
+  availableReplicas: 2
+  conditions:
+  - lastTransitionTime: 2016-10-04T12:25:39Z
+    lastUpdateTime: 2016-10-04T12:25:39Z
+    message: Replica set "nginx-deployment-4262182780" is progressing.
+    reason: ReplicaSetUpdated
+    status: "True"
+    type: Progressing
+  - lastTransitionTime: 2016-10-04T12:25:42Z
+    lastUpdateTime: 2016-10-04T12:25:42Z
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: 2016-10-04T12:25:39Z
+    lastUpdateTime: 2016-10-04T12:25:39Z
+    message: 'Error creating: pods "nginx-deployment-4262182780-" is forbidden: exceeded quota:
+      object-counts, requested: pods=1, used: pods=3, limited: pods=2'
+    reason: FailedCreate
+    status: "True"
+    type: ReplicaFailure
+  observedGeneration: 3
+  replicas: 2
+  unavailableReplicas: 2
+В конце концов, как только крайний срок выполнения Deployment будет превышен, Kubernetes обновит статус и причину (reason) условия выполнения (Progressing condition):
+
+
+Conditions:
+  Type            Status  Reason
+  ----            ------  ------
+  Available       True    MinimumReplicasAvailable
+  Progressing     False   ProgressDeadlineExceeded
+  ReplicaFailure  True    FailedCreate
+Вы можете решить проблему недостаточной квоты, сократив Deployment, сократив другие контроллеры, которые вы можете использовать, или увеличив квоту в своем пространстве имен. Если вы удовлетворяете условиям квоты, а контроллер Deployment завершает развертывание Deployment, вы увидите обновление состояния Deployment с успешным условием (Status=True и Reason=NewReplicaSetAvailable).
+
+
+Conditions:
+  Type          Status  Reason
+  ----          ------  ------
+  Available     True    MinimumReplicasAvailable
+  Progressing   True    NewReplicaSetAvailable
+Type=Available с Status=True означает, что ваш Deployment имеет минимальную доступность. Минимальная доступность определяется параметрами, указанными в стратегии развертывания. Type=Progressing со Status=True означает, что ваш Deployment находится либо в середине развертывания, и оно прогрессирует, либо успешно завершил свое выполнение и доступны минимально необходимые новые реплики (в нашем случае Reason=NewReplicaSetAvailable означает, что развертывание завершено).
+
+Вы можете проверить, удалось ли выполнить Deployment, используя kubectl rollout status. kubectl rollout status возвращает ненулевой код завершения, если Deployment превысило срок выполнения.
+
+
+kubectl rollout status deployment.v1.apps/nginx-deployment
+Вывод:
+
+
+Waiting for rollout to finish: 2 out of 3 new replicas have been updated...
+error: deployment "nginx" exceeded its progress deadline
+$ echo $?
+1
+Работа при неудачном Deployment
+Все действия, которые применяются к завершенному (complete) Deployment, также применимы к неудачному (failed) Deployment. Вы можете масштабировать его расширяя/сокращая, откатиться к предыдущей ревизии или даже приостановить его, если вам нужно применить несколько настроек в шаблоне Pod для Deployment.
+
+Политика очистки
+Вы можете установить поле .spec.revisionHistoryLimit в Deployment, чтобы указать, сколько старых ReplicaSets для этого Deployment вы хотите сохранить. Остальные будут удалены сборщиком мусора в фоновом режиме. По умолчанию это 10.
+
+Примечание. Явное задание этого поля равным 0 приведет к очистке всей истории Deployment, поэтому Deployment не сможет выполнить откат.
+
+Canary Deployment
+Если вы хотите развернуть релизы для подмножества пользователей или серверов с помощью Deployment, вы можете создать несколько Deployment, по одному для каждого релиза, следуя Canary шаблону.
+
