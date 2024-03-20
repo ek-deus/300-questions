@@ -1,0 +1,167 @@
+DNS для сервисов и Pod'ов в Kubernetes
+
+В этом посте представлен обзор поддержки DNS в Kubernetes.
+
+Kubernetes DNS планирует Pod и сервис DNS в кластере и настраивает kubelet'ы для указания отдельным контейнерам использовать IP-адрес сервиса DNS для разрешения имен DNS.
+
+Какие объекты получают DNS-имена?
+
+Каждому сервису, определенному в кластере (включая сам DNS-сервер), присваивается имя DNS. По умолчанию в список поиска DNS клиентского Pod'а будет входить собственное пространство имен Pod'а и домен кластера по умолчанию. Это лучше всего иллюстрируется примером:
+
+Предположим, что сервис называется foo в пространстве имен Kubernetes bar. Pod, работающий в пространстве имен bar, может найти этот сервис, просто выполнив DNS-запрос для foo. Pod, работающий в пространстве имен quux, может найти этот сервис, выполнив DNS-запрос для foo.bar.
+
+В следующих разделах подробно описаны поддерживаемые типы записей и поддерживаемый макет (layout). Любой другой макет (layout), имена или запросы, которые работают, считаются деталями реализации и могут быть изменены без предупреждения.
+
+Сервисы
+DNS-записи A
+"Обычным" (не headless) сервисам присваивается DNS-запись A для имени в форме my-svc.my-namespace.svc.cluster-domain.example. Это разрешает IP-адрес кластера Сервиса.
+
+“Headless” (без IP-адреса кластера) сервисам также назначается DNS-запись A для имени в форме my-svc.my-namespace.svc.cluster-domain.example. В отличие от обычных Сервисов, это разрешает набор IP-адресов Pod'ов, выбранных Сервисом. Ожидается, что клиенты будут использовать набор или использовать стандартную циклическую выборку из набора.
+
+Записи SRV
+Записи SRV создаются для именованных портов, которые являются частью обычных или Headless сервисов. Для каждого именованного порта запись SRV будет иметь вид _my-port-name._my-port-protocol.my-svc.my-namespace.svc.cluster-domain.example. Для обычного сервиса это разрешает номер порта и имя домена: my-svc.my-namespace.svc.cluster-domain.example. Для Headless сервиса это разрешает несколько ответов, по одному для каждого Pod'а, поддерживающего сервис, и содержит номер порта и имя домена Pod'а в форме auto-generated-name.my-svc.my-namespace.svc.cluster-domain.example.
+
+Pod'ы
+Поля имени хоста и субдомена (hostname и subdomain) Pod
+В настоящее время при создании Pod'а его именем хоста является значение metadata.name Pod'а.
+
+Спецификация Pod имеет необязательное поле hostname, которое можно использовать для указания имени хоста Pod. Если указано, он имеет приоритет над именем Pod'а, чтобы быть именем хоста Pod'а. Например, если для Pod'а с hostname установлено значение “my-host”, то именем хоста Pod'а будет “my-host”.
+
+Спецификация Pod также имеет необязательное поле subdomain, которое можно использовать для указания его субдомена. Например, Pod с именем хоста, установленным на “foo”, и поддомен, установленный в “bar”, в пространстве имен “my-namespace”, будет иметь полное доменное имя (FQDN) “foo.bar.my-namespace.svc.cluster-domain.example”.
+
+Пример:
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-subdomain
+spec:
+  selector:
+    name: busybox
+  clusterIP: None
+  ports:
+  - name: foo # На самом деле, порт не требуется
+    port: 1234
+    targetPort: 1234
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox1
+  labels:
+    name: busybox
+spec:
+  hostname: busybox-1
+  subdomain: default-subdomain
+  containers:
+  - image: busybox:1.28
+    command:
+      - sleep
+      - "3600"
+    name: busybox
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox2
+  labels:
+    name: busybox
+spec:
+  hostname: busybox-2
+  subdomain: default-subdomain
+  containers:
+  - image: busybox:1.28
+    command:
+      - sleep
+      - "3600"
+    name: busybox
+Если существует headless сервис в том же пространстве имен, что и Pod, и с тем же именем, что и субдомен, сервер KubeDNS кластера также возвращает запись A для полного имени хоста Pod'а. Например, если для Pod'а с hostname установленным в “busybox-1”, а для subdomain - “default-subdomain”, а headless сервис с именем “default-subdomain” в том же пространстве имен, то Pod увидит свое собственное полное доменное имя как “busybox-1.default-subdomain.my-namespace.svc.cluster-domain.example”. DNS обслуживает запись A с этим именем, указывающую на IP-адрес Pod'а. Оба Pod'а “busybox1” и “busybox2” могут иметь свои отличные записи A.
+
+Объект Endpoints может указывать hostname для любых адресов конечных точек, а также его IP.
+
+Примечание. Поскольку записи A не создаются для имен Pod'ов, для создания записи A Pod'а требуется hostname. Pod без hostname, но с subdomain, только создаст запись A для headless сервиса (default-subdomain.my-namespace.svc.cluster-domain.example), указывая IP-адрес Pod'а. Кроме того, Pod должен быть готов для того, чтобы иметь запись, если только publishNotReadyAddresses=True не установлен в Сервисе.
+
+Политика DNS Pod'а
+Политики DNS могут быть установлены отдельно для каждого Pod'а. В настоящее время Kubernetes поддерживает следующие специфичные для pod политики DNS. Эти политики указаны в поле dnsPolicy Pod Spec.
+
+“Default“: Pod наследует конфигурацию разрешения имен от узла, на котором работают Pod'ы.
+“ClusterFirst“: любой DNS-запрос, который не соответствует настроенному суффиксу домена кластера, например “www.kubernetes.io”, перенаправляется на вышестоящий сервер имен, унаследованный от узла. Администраторы кластера могут настроить дополнительный stub-domain и вышестоящие DNS-серверы.
+“ClusterFirstWithHostNet“: для Pod'ов, работающих с hostNetwork, вы должны явно установить политику DNS “ClusterFirstWithHostNet“.
+“None“: позволяет Pod'у игнорировать настройки DNS из среды Kubernetes. Все настройки DNS должны быть предоставлены с использованием поля dnsConfig в Pod Spec.
+Примечание. “Default” не является политикой DNS по умолчанию. Если dnsPolicy не указано явно, используется “ClusterFirst“.
+
+В приведенном ниже примере показан Pod с его политикой DNS, установленной в “ClusterFirstWithHostNet”, поскольку для hostNetwork установлено значение true.
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox
+  namespace: default
+spec:
+  containers:
+  - image: busybox:1.28
+    command:
+      - sleep
+      - "3600"
+    imagePullPolicy: IfNotPresent
+    name: busybox
+  restartPolicy: Always
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+Конфигурация DNS для Pod
+DNS-конфигурация Pod позволяет пользователям лучше контролировать настройки DNS для Pod.
+
+Поле dnsConfig является необязательным и может работать с любыми настройками dnsPolicy. Однако, когда dnsPolicy Pod'а имеет значение “None”, необходимо указать поле dnsConfig.
+
+Ниже приведены свойства, которые пользователь может указать в поле dnsConfig:
+
+nameservers: список IP-адресов, которые будут использоваться в качестве DNS-серверов для Pod. Может быть указано не более 3 IP-адресов. Если для dnsPolicy Pod'а установлено значение “None”, список должен содержать хотя бы один IP-адрес, в противном случае это свойство является необязательным. Перечисленные серверы будут объединены с базовыми серверами имен, созданными из указанной политики DNS, с удалением дублированных адресов.
+search: список DNS-доменов поиска для поиска имени хоста в Pod. Это свойство не является обязательным. Если указан, предоставленный список будет объединен с именами базовых доменов поиска, созданными из выбранной политики DNS. Повторяющиеся доменные имена удаляются. Kubernetes позволяет использовать не более 6 поисковых доменов.
+options: необязательный список объектов, где каждый объект может иметь свойство name (обязательно) и свойство value (необязательно). Содержимое этого свойства будет объединено с параметрами, созданными в указанной политике DNS. Повторяющиеся записи удаляются.
+Ниже приведен пример Pod с пользовательскими настройками DNS:
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  name: dns-example
+spec:
+  containers:
+    - name: test
+      image: nginx
+  dnsPolicy: "None"
+  dnsConfig:
+    nameservers:
+      - 1.2.3.4
+    searches:
+      - ns1.svc.cluster-domain.example
+      - my.dns.search.suffix
+    options:
+      - name: ndots
+        value: "2"
+      - name: edns0
+Когда вышеуказанный Pod создан, контейнерный тест получает следующее содержимое в своем файле /etc/resolv.conf:
+
+
+nameserver 1.2.3.4
+search ns1.svc.cluster-domain.example my.dns.search.suffix
+options ndots:2 edns0
+Для настройки IPv6, путь поиска и сервер имен должны быть настроены следующим образом:
+
+
+kubectl exec -it dns-example -- cat /etc/resolv.conf
+Вывод:
+
+
+nameserver fd00:79:30::a
+search default.svc.cluster-domain.example svc.cluster-domain.example cluster-domain.example
+options ndots:5
+Наличие функционала
+Доступность Pod DNS Config и DNS Policy “None” показаны ниже.
+
+K8S версия: 1.14 - Поддержка функционала: Stable
+K8S версия: 1.10 - Поддержка функционала: Beta (по умолчанию включено)
+K8S версия: 1.9 - Поддержка функционала: Alpha
