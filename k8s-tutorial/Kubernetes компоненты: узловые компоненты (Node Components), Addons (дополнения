@@ -1,3 +1,5 @@
+Kubernetes компоненты: узловые компоненты (Node Components), Addons (дополнения)
+
 Узловые компоненты работают на каждом узле, поддерживая работающие pod'ы и обеспечивая среду выполнения Kubernetes (runtime environment).
 
 kubelet
