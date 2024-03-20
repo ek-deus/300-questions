@@ -1,0 +1,41 @@
+Селекторы полей (Field Selectors) в Kubernetes
+
+Селекторы полей позволяют выбирать ресурсы Kubernetes на основе значения одного или нескольких полей ресурсов. Вот несколько примеров запросов селектора полей:
+
+
+metadata.name=my-service
+metadata.namespace!=default
+status.phase=Pending
+Эта команда kubectl выбирает все Pod, для которых значение поля status.phase равно Running:
+
+
+kubectl get pods --field-selector status.phase=Running
+Примечание:
+
+Селекторы полей по сути являются фильтрами ресурсов. По умолчанию селекторы/фильтры не применяются, что означает, что выбраны все ресурсы указанного типа. Это делает следующие запросы kubectl эквивалентными:
+
+
+kubectl get pods
+kubectl get pods --field-selector ""
+Поддерживаемые поля
+Поддерживаемые селекторы полей зависят от типа ресурса Kubernetes. Все типы ресурсов поддерживают поля metadata.name и metadata.namespace. Использование неподдерживаемых селекторов полей приводит к ошибке. Например:
+
+
+kubectl get ingress --field-selector foo.bar=baz
+
+Error from server (BadRequest): Unable to find "ingresses" that match label selector "", field selector "foo.bar=baz": "foo.bar" is not a known field selector: only "metadata.name", "metadata.namespace"
+Поддерживаемые операторы
+Вы можете использовать операторы =, == и != с селекторами полей (= и == означают одно и то же). Следующая команда kubectl, например, выбирает все сервисы Kubernetes, которые не находятся в пространстве имен по умолчанию:
+
+
+kubectl get services  --all-namespaces --field-selector metadata.namespace!=default
+Сцепленные селекторы
+Как и в случае селекторов меток и других селекторов, селекторы полей могут быть объединены в цепочку в виде списка через запятую. Следующая команда kubectl выбирает все модули, для которых status.phase не равен Running, а поле spec.restartPolicy равно Always:
+
+
+kubectl get pods --field-selector=status.phase!=Running,spec.restartPolicy=Always
+Несколько типов ресурсов
+Вы используете селекторы полей для нескольких типов ресурсов. Следующая команда kubectl выбирает все Statefulsets и Services, которые не находятся в пространстве имен по умолчанию:
+
+
+kubectl get statefulsets,services --all-namespaces --field-selector metadata.namespace!=default
