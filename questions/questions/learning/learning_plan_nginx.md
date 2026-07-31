@@ -107,3 +107,70 @@ http {
 }
 ```
 
+### Nginx Ingress Controller (Kubernetes)
+В Kubernetes Nginx Ingress Controller — это не просто веб-сервер. Это контроллер, который следит за API Kubernetes и динамически генерирует nginx.conf.
+Архитектура Ingress Controller
+Ingress Controller (Pod): Сам Nginx + процесс-контроллер (на Go), который слушает K8s API.
+Ingress Resource (YAML): Объект в K8s, который описывает правила маршрутизации (какой домен на какой Service идти).
+ConfigMap: Глобальные настройки для всего Nginx.
+Как это работает под капотом?
+Вы создаете Ingress YAML.
+Ingress Controller видит событие в K8s API.
+Контроллер берет шаблон nginx.tmpl, подставляет туда данные из всех Ingress ресурсов и генерирует новый nginx.conf.
+Контроллер выполняет nginx -s reload.
+Конфигурация Ingress (Аннотации)
+В отличие от классического Nginx, в K8s мы не пишем nginx.conf руками. Мы используем Аннотации (Annotations) в манифесте Ingress.
+Пример Ingress YAML с разбором аннотаций:
+
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app-ingress
+  annotations:
+    # --- Базовые настройки ---
+    kubernetes.io/ingress.class: "nginx" # Указываем, какой контроллер обрабатывает (в новых версиях используется IngressClass)
+    
+    # --- SSL и Редиректы ---
+    nginx.ingress.kubernetes.io/ssl-redirect: "true" # Принудительный редирект с HTTP на HTTPS (308 redirect)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod" # Интеграция с cert-manager для автовыпуска сертификатов
+    
+    # --- Проксирование и Таймауты ---
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m" # Максимальный размер тела запроса (аналог client_max_body_size)
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60" # Таймаут ожидания ответа от бэкенда
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    
+    # --- Балансировка ---
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri" # Балансировка на основе хэша URI (для кэширования на бэкенде)
+    
+    # --- Rewrite (Перезапись путей) ---
+    nginx.ingress.kubernetes.io/rewrite-target: /$2 
+    # Если запрос /api/v1/users, то на бэкенд уйдет /users (см. capture group в path ниже)
+
+    # --- CORS ---
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+
+    # --- Snippets (Если аннотаций не хватило) ---
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Custom-Header: MyValue";
+      # Вставка кастомного кода прямо в блок location
+spec:
+  tls:
+  - hosts:
+    - myapp.example.com
+    secretName: myapp-tls-secret # Имя K8s Secret с сертификатами
+  rules:
+  - host: myapp.example.com
+    http:
+      paths:
+      - path: /api(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: my-app-service
+            port:
+              number: 80
+```
+
